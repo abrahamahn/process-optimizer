@@ -4,6 +4,7 @@ on:
     branches: [codex/settings-controls-v041-impl3]
     paths:
       - scripts/apply_settings_controls_v041.py
+      - scripts/prep_settings_patch_v041.py
       - .github/workflows/apply-settings-v041.yml
 permissions:
   contents: write
@@ -15,7 +16,11 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Apply reviewed settings-control patch
         shell: pwsh
-        run: python scripts/apply_settings_controls_v041.py
+        run: |
+          python scripts/prep_settings_patch_v041.py
+          if ($LASTEXITCODE -ne 0) { throw 'Patch anchor normalization failed' }
+          python scripts/apply_settings_controls_v041.py
+          if ($LASTEXITCODE -ne 0) { throw 'Settings-control patch failed' }
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.90.0 --profile minimal --component clippy --component rustfmt
       - name: Format and test
