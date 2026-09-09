@@ -11,6 +11,7 @@ concurrency:
 jobs:
   core:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Install pinned Rust toolchain
@@ -19,14 +20,27 @@ jobs:
       - run: cargo clippy --lib
       - name: Record resolved dependencies
         run: cat Cargo.lock
+      - name: Package a formatted source snapshot for reproducible review
+        run: |
+          cargo fmt --all
+          mkdir -p dist
+          tar --exclude=target --exclude=.git --exclude=dist -czf dist/source-review.tar.gz Cargo.toml Cargo.lock rust-toolchain.toml src tests scripts specs README.md AGENTS.md .github
+      - uses: actions/upload-artifact@v4
+        with:
+          name: source-review-${{ github.sha }}
+          path: dist/source-review.tar.gz
+          retention-days: 7
   windows:
     runs-on: windows-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.90.0 --profile minimal --component clippy --component rustfmt
       - name: Native API tests (only test-owned fixture processes are changed)
         run: cargo test --all-targets -- --nocapture
+      - name: Explicit opt-in to force termination of our disposable fixture only
+        run: cargo test --test windows_contract -- --ignored --nocapture
       - name: Native code review checks
         run: cargo clippy --all-targets
       - name: Build portable application
@@ -41,7 +55,9 @@ jobs:
           $probe = Join-Path $pwd 'dist/ci.probe.json'
           $p = Start-Process -FilePath $exe -ArgumentList @('--probe', $probe) -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw 'Read-only GPU probe failed' }
-          Get-Content $probe | Select-Object -First 30
+          $data = Get-Content $probe -Raw | ConvertFrom-Json
+          Write-Host "Read-only probe parsed successfully. Process records: $($data.processes.Count). No machine inventory is published."
+          Remove-Item $probe
       - name: Package portable executable
         shell: pwsh
         run: |

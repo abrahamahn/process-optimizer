@@ -1,6 +1,6 @@
 use crate::{engine::Backend, model::*, policy};
 use super::wide;
-use std::{collections::HashSet, ffi::c_void, mem::{size_of, zeroed}, ptr::{null, null_mut}, sync::{Arc, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant}};
+use std::{collections::HashSet, mem::{size_of, zeroed}, ptr::{null, null_mut}, sync::{Arc, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant}};
 use windows_sys::Win32::{
     Foundation::*,
     Security::{GetTokenInformation, TokenUser, TokenElevation, TOKEN_USER, TOKEN_ELEVATION, TOKEN_QUERY},
@@ -9,6 +9,8 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, PostMessageW, WM_CLOSE},
 };
 
+// Standard access right from WinNT.h; windows-sys does not export it here.
+const PROCESS_SYNCHRONIZE: u32 = 0x0010_0000;
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn ProcessIdToSessionId(pid: u32, session: *mut u32) -> i32;
@@ -66,7 +68,6 @@ fn token_sid(process: HANDLE) -> NativeResult<String> {
     let mut length = 0;
     unsafe { GetTokenInformation(token.0, TokenUser, null_mut(), 0, &mut length); }
     if length == 0 || length > 65536 { return Err(last_fault("TokenUser length")); }
-    // u64 storage ensures alignment for TOKEN_USER and SID pointers.
     let mut storage = vec![0u64; (length as usize).div_ceil(8)];
     if unsafe { GetTokenInformation(token.0, TokenUser, storage.as_mut_ptr().cast(), length, &mut length) } == 0 { return Err(last_fault("TokenUser")); }
     let info = unsafe { &*storage.as_ptr().cast::<TOKEN_USER>() };
@@ -95,7 +96,7 @@ pub fn is_elevated() -> NativeResult<bool> {
 }
 
 pub fn exact_handle(id: &Identity, rights: u32) -> NativeResult<Handle> {
-    let h = open(id.pid, rights | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE)?;
+    let h = open(id.pid, rights | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE)?;
     if unsafe { WaitForSingleObject(h.0, 0) } == WAIT_OBJECT_0 { return Err(Fault::new(FaultKind::Gone, "Original process exited.")); }
     let current = identity_from_handle(h.0, id.pid)?;
     if !policy::same_process(id, &current) { return Err(Fault::new(FaultKind::Gone, "PID was reused or executable identity changed.")); }
@@ -259,7 +260,6 @@ impl Backend for WindowsBackend {
             if context.count == 0 && !force { return Ok(CloseState::KeptOpen); }
         }
         if !force || self.cancelled() { return Ok(CloseState::KeptOpen); }
-        // Open and revalidate the SAME process again before escalation. No tree kill.
         self.authorize(id)?;
         let terminate = match self.checked(id, PROCESS_TERMINATE) {
             Ok(v) => v,

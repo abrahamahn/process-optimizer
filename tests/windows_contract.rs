@@ -64,15 +64,17 @@ fn graceful_request_does_not_kill_windowless_fixture() {
 }
 
 #[test]
+#[ignore = "explicit opt-in: cargo test --test windows_contract -- --ignored"]
 fn explicitly_approved_force_terminates_only_owned_fixture() {
     let fixture = Fixture::start(false); let id = fixture.identity();
+    let expected = std::fs::canonicalize(env!("CARGO_BIN_EXE_optimizer-test-fixture")).unwrap();
+    assert_eq!(std::fs::canonicalize(&id.path).unwrap(), expected);
     let mut backend = WindowsBackend::new(None, vec![], None).unwrap();
     let mut s = session(id.clone(), ActionKind::ForceClose);
     let mut db = Database::open(Path::new(":memory:")).unwrap(); db.create(&s).unwrap();
     engine::apply(&mut s, &mut backend, &mut db).unwrap();
     assert_eq!(s.closed[0].state, CloseState::Terminated);
     assert!(!process::alive(&id).unwrap());
-    // Recovery cannot relaunch or terminate a replacement process.
     engine::restore(&mut s, &mut backend, &mut db).unwrap();
 }
 

@@ -52,7 +52,9 @@ impl Drop for State {
 
 impl State {
     fn new(smoke: bool) -> AppResult<Self> {
-        let settings = if smoke { Settings::default() } else { runner::database()?.settings()? };
+        let mut settings = if smoke { Settings::default() } else { runner::database()?.settings()? };
+        // Experimental GPU scheduling always requires fresh opt-in on opening the UI.
+        settings.options.gpu_priority = false;
         Ok(Self { window: null_mut(), widgets: BTreeMap::new(), settings, snapshot: Snapshot::default(), actions: BTreeMap::new(), game: None, sample: Arc::new(Mutex::new(None)), sampling: false, minimized: false, font: null_mut(), mono_font: null_mut(), smoke, init_error: None })
     }
     fn h(&self, id: u16) -> HWND { *self.widgets.get(&id).unwrap_or(&null_mut()) }
@@ -81,13 +83,13 @@ impl State {
         self.widget(102, "STATIC", "PID       Application                 GPU peak    Dedicated MiB   Planned action / protection", 0)?;
         self.widget(LIST, "LISTBOX", "", WS_TABSTOP | WS_VSCROLL | WS_HSCROLL | LBS_EXTENDEDSEL as u32 | LBS_NOINTEGRALHEIGHT as u32 | LBS_NOTIFY as u32)?;
         self.widget(GPU_STATUS, "STATIC", "GPU samples are read-only. '-' means unavailable/not observed, not a confirmed zero.", 0)?;
-        for (id, label) in [(LOWER, "Lower priorities"), (CLOSE, "Close gracefully"), (FORCE, "Force-close allowed"), (PROTECT, "Protect app"), (KEEP, "Clear selection plan")] {
+        for (id, label) in [(LOWER, "Lower priorities"), (CLOSE, "Close gracefully"), (FORCE, "Force-close allowed"), (PROTECT, "Protect / unprotect app"), (KEEP, "Clear selection plan")] {
             self.widget(id, "BUTTON", label, WS_TABSTOP)?;
         }
-        for (id, label) in [(OPT_GPU, "GPU priority"), (OPT_CPU, "CPU priority"), (OPT_ECO, "EcoQoS"), (OPT_MEMORY, "Memory priority"), (OPT_LAUNCH, "Launch game if needed")] {
+        for (id, label) in [(OPT_GPU, "GPU (experimental)"), (OPT_CPU, "CPU priority"), (OPT_ECO, "EcoQoS"), (OPT_MEMORY, "Memory priority"), (OPT_LAUNCH, "Launch game if needed")] {
             self.widget(id, "BUTTON", label, WS_TABSTOP | BS_AUTOCHECKBOX as u32)?;
         }
-        self.widget(DETAILS, "EDIT", "Select processes with Ctrl/Shift, then choose an action.\r\nClosing an app is not a memory snapshot. Unsaved work cannot be restored.\r\nLower GPU priority is a scheduling hint, not a GPU usage cap or exclusive reservation.", ES_MULTILINE as u32 | ES_READONLY as u32 | ES_AUTOVSCROLL as u32 | WS_VSCROLL)?;
+        self.widget(DETAILS, "EDIT", "Select processes with Ctrl/Shift, then choose an action.\r\nClosing an app is not a memory snapshot. Unsaved work cannot be restored.\r\nLower GPU priority is an experimental scheduling hint, not a GPU usage cap or exclusive reservation.", ES_MULTILINE as u32 | ES_READONLY as u32 | ES_AUTOVSCROLL as u32 | WS_VSCROLL)?;
         for (id, label) in [(START, "START GAME SESSION"), (RESTORE, "Restore now"), (REPORT, "Show last report"), (ACK, "Keep current / clear warning"), (SAVE, "Save settings")] {
             self.widget(id, "BUTTON", label, WS_TABSTOP)?;
         }
@@ -101,7 +103,7 @@ impl State {
     }
     fn update_fonts(&mut self) {
         let dpi = unsafe { GetDpiForWindow(self.window) }.max(96);
-        let height = -((15 * dpi) / 96) as i32;
+        let height = -(((15 * dpi) / 96) as i32);
         let (old, old_mono) = (self.font, self.mono_font);
         self.font = unsafe { CreateFontW(height, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 0, 0, wide("Segoe UI").as_ptr()) };
         self.mono_font = unsafe { CreateFontW(height, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 0, 0, wide("Consolas").as_ptr()) };
@@ -175,21 +177,27 @@ impl State {
         self.settings.options.launch_game = self.checked(OPT_LAUNCH);
     }
     fn plan_preview(&self) {
-        let mut text = String::from("APPROVAL PLAN — selection is for this session only\r\n");
+        let mut text = String::from("APPROVAL PLAN — exact processes, this session only\r\n");
         for action in self.actions.values() { text.push_str(&format!("{:?}: PID {}  {}\r\n", action.action, action.target.pid, action.target.path)); }
-        text.push_str("\r\nGPU priority is not a usage cap. Close releases work by ending the selected process, not by forcing VRAM eviction.\r\nNo documents, RAM contents, browser tabs or unsaved work are snapshotted. No automatic app relaunch.");
+        text.push_str("\r\nA helper process exiting does not prove the entire application exited. Unselected/new helpers are never force-closed.\r\nGPU priority is not a usage cap. No documents, RAM contents, tabs or unsaved work are snapshotted. No automatic relaunch.");
         self.text(DETAILS, &text);
     }
     fn mark(&mut self, action: Option<ActionKind>) -> AppResult<()> {
         let selected = self.selected();
         if selected.is_empty() { return Err("Select background process rows first (Ctrl/Shift for multiple).".into()); }
+        // Validate the entire selection before changing any plan entry.
+        if action.is_some() {
+            for &index in &selected {
+                let row = &self.snapshot.processes[index];
+                if let Some(reason) = &row.protected_reason { return Err(format!("{} is protected: {reason}", row.name)); }
+                if self.game.as_ref().is_some_and(|g| policy::same_process(g, &row.identity)) { return Err("The selected game is protected.".into()); }
+                if self.settings.protected_paths.iter().any(|p| policy::normalized_path(p) == policy::normalized_path(&row.identity.path)) { return Err("This application is in your protected list.".into()); }
+            }
+        }
         for index in selected {
             let row = &self.snapshot.processes[index];
-            if action.is_none() { self.actions.remove(&row.identity.pid); continue; }
-            if let Some(reason) = &row.protected_reason { return Err(format!("{} is protected: {reason}", row.name)); }
-            if self.game.as_ref().is_some_and(|g| policy::same_process(g, &row.identity)) { return Err("The selected game is protected.".into()); }
-            if self.settings.protected_paths.iter().any(|p| policy::normalized_path(p) == policy::normalized_path(&row.identity.path)) { return Err("This application is in your protected list.".into()); }
-            self.actions.insert(row.identity.pid, ApprovedAction { target: row.identity.clone(), action: action.unwrap() });
+            if let Some(action) = action { self.actions.insert(row.identity.pid, ApprovedAction { target: row.identity.clone(), action }); }
+            else { self.actions.remove(&row.identity.pid); }
         }
         self.repopulate(); self.plan_preview(); Ok(())
     }
@@ -206,12 +214,18 @@ impl State {
     }
     fn protect(&mut self) -> AppResult<()> {
         let selected = self.selected();
-        if selected.is_empty() { return Err("Select the application(s) to protect.".into()); }
-        for index in selected {
-            let row = &self.snapshot.processes[index];
-            if row.identity.path.is_empty() { continue; }
-            self.actions.remove(&row.identity.pid);
-            if !self.settings.protected_paths.iter().any(|p| policy::normalized_path(p) == policy::normalized_path(&row.identity.path)) { self.settings.protected_paths.push(row.identity.path.clone()); }
+        if selected.is_empty() { return Err("Select the application(s) to protect or unprotect.".into()); }
+        let mut paths: Vec<_> = selected.iter().map(|i| self.snapshot.processes[*i].identity.path.clone()).filter(|p| !p.is_empty()).collect();
+        paths.sort(); paths.dedup();
+        let all_protected = !paths.is_empty() && paths.iter().all(|p| self.settings.protected_paths.iter().any(|v| policy::normalized_path(v) == policy::normalized_path(p)));
+        if all_protected {
+            if !confirm(self.window, "Remove your saved protection for these applications?\n\nBuilt-in system/game-support protections remain active. This does not approve any closure.") { return Ok(()); }
+            self.settings.protected_paths.retain(|p| !paths.iter().any(|v| policy::normalized_path(v) == policy::normalized_path(p)));
+        } else {
+            for path in paths {
+                self.actions.retain(|_, a| policy::normalized_path(&a.target.path) != policy::normalized_path(&path));
+                if !self.settings.protected_paths.iter().any(|p| policy::normalized_path(p) == policy::normalized_path(&path)) { self.settings.protected_paths.push(path); }
+            }
         }
         runner::database()?.save_settings(&self.settings)?;
         self.repopulate(); self.plan_preview(); Ok(())
@@ -235,10 +249,11 @@ impl State {
         let mut db = runner::database()?;
         if db.active()?.is_some() { return Err("Restore/review the existing session before starting another.".into()); }
         if self.actions.is_empty() { return Err("Choose at least one background process action. There is no automatic kill list.".into()); }
+        if self.actions.values().any(|a| a.action == ActionKind::LowerPriorities) && !(self.settings.options.gpu_priority || self.settings.options.cpu_priority || self.settings.options.eco_qos || self.settings.options.memory_priority) { return Err("Choose at least one priority policy, or use a close action instead.".into()); }
         let mut plan = Plan { game_path: self.settings.game_path.clone(), game: self.game.clone(), actions: self.actions.values().cloned().collect(), protected_paths: self.settings.protected_paths.clone(), options: self.settings.options.clone(), consent: true, force_consent: true };
         policy::validate(&plan)?;
         self.plan_preview();
-        let summary = format!("Start a session for:\n{}\n\nApply the {} explicitly listed process actions?\n\nClosing applications may lose unsaved work. A settings journal cannot restore that work. GPU priority is a hint, not a GPU lock.\n\nNo security, network, Bluetooth, audio or Windows service settings will be changed.", plan.game_path, plan.actions.len());
+        let summary = format!("Start a session for:\n{}\n\nApply the {} explicitly listed process actions?\n\nClosing applications may lose unsaved work. A settings journal cannot restore that work. GPU priority is experimental, not a GPU lock; it has no established gaming-performance benefit on your machine.\n\nNo security, network, Bluetooth, audio or Windows service settings will be changed.", plan.game_path, plan.actions.len());
         if !confirm(self.window, &summary) { return Ok(()); }
         let forced: Vec<_> = plan.actions.iter().filter(|a| a.action == ActionKind::ForceClose).collect();
         plan.force_consent = forced.is_empty() || confirm(self.window, &format!("SEPARATE FORCE-TERMINATION APPROVAL\n\nAfter a normal close request times out, terminate these exact processes?\n{}\n\nThis can permanently lose unsaved work. There is no memory snapshot. Permission applies to this session only.", forced.iter().map(|a| format!("PID {} — {}", a.target.pid, a.target.path)).collect::<Vec<_>>().join("\n")));
@@ -286,7 +301,7 @@ impl State {
             ACK => {
                 if confirm(self.window, "Keep the current values for all unresolved recovery items?\n\nThis discards automatic restoration for those items and clears the warning. It is NOT a successful restore. Review the report first.") { runner::spawn_worker("--acknowledge", None) } else { Ok(()) }
             }
-            SAVE => { self.update_settings(); runner::database()?.save_settings(&self.settings)?; self.text(STATUS, "Settings saved. Process termination approval is never persisted as a blanket permission."); Ok(()) }
+            SAVE => { self.update_settings(); runner::database()?.save_settings(&self.settings)?; self.text(STATUS, "Settings saved. Closure approval is session-only. Experimental GPU priority needs fresh opt-in when reopening the UI."); Ok(()) }
             _ => Ok(()),
         }
     }
@@ -337,8 +352,7 @@ unsafe extern "system" fn window_proc(window: HWND, message: u32, w: WPARAM, l: 
     if message == WM_NCDESTROY { SetWindowLongPtrW(window, GWLP_USERDATA, 0); return DefWindowProcW(window, message, w, l); }
     let pointer = GetWindowLongPtrW(window, GWLP_USERDATA) as *const RefCell<State>;
     if !pointer.is_null() {
-        // Native controls can synchronously re-enter this callback. Never create
-        // aliased &mut State references during WM_SETTEXT or modal dialogs.
+        // Native messages re-enter this callback: never alias mutable State.
         if let Ok(mut state) = (*pointer).try_borrow_mut() {
             match message {
                 WM_CREATE => {
