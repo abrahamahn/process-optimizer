@@ -42,5 +42,31 @@ new = '''            if info.Level != 1 { false } else {
             }'''
 assert s.count(old) == 1, 'Unexpected native union access'
 p.write_text(s.replace(old, new), encoding='utf-8', newline='\n')
-runpy.run_path('scripts/product_followup.py')
-print(f'Applied {len(prepared)} checksum-verified source changes and reviewed follow-up.')
+corrections = runpy.run_path('scripts/product_followup.py')
+edit = corrections['edit']
+edit('src/journal.rs', 'if session.schema != SCHEMA_VERSION {', 'if session.schema != SCHEMA_VERSION && session.schema != 2 {')
+edit('src/journal.rs', '    #[test]\n    fn only_one_unfinished_session()', '''    #[test]
+    fn stored_schema_two_sessions_remain_recoverable_without_new_launch_permission() {
+        let mut db = Database::open(Path::new(":memory:")).unwrap();
+        let mut original = session("legacy");
+        db.create(&original).unwrap();
+        original.schema = 2;
+        original.stage = Stage::Active;
+        let mut value = serde_json::to_value(&original).unwrap();
+        value.as_object_mut().unwrap().remove("reopened");
+        let legacy = serde_json::to_string(&value).unwrap();
+        db.connection.execute("UPDATE sessions SET body=?1 WHERE id='legacy'", [&legacy]).unwrap();
+        assert_eq!(db.get("legacy").unwrap().schema, 2);
+        assert_eq!(db.latest().unwrap().unwrap().schema, 2);
+        let mut recovered = db.active().unwrap().unwrap();
+        assert!(recovered.reopened.is_empty());
+        recovered.stage = Stage::Restored;
+        db.save(&recovered).unwrap();
+        assert_eq!(db.get("legacy").unwrap().schema, 2);
+        assert!(db.active().unwrap().is_none());
+        db.create(&session("new-reviewed-session")).unwrap();
+        assert_eq!(db.active().unwrap().unwrap().schema, SCHEMA_VERSION);
+    }
+    #[test]
+    fn only_one_unfinished_session()''')
+print(f'Applied {len(prepared)} checksum-verified source changes, reviewed follow-up and stored-record upgrade compatibility.')
