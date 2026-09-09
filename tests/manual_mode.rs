@@ -40,6 +40,7 @@ fn config() -> Config {
     let i = id(10);
     Config {
         schema: 1,
+        startup_disabled: vec![],
         rules: vec![manual::approve(&i, stamp(&i), RuleAction::Close, 100).unwrap()],
     }
 }

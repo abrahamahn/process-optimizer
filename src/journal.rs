@@ -193,7 +193,7 @@ impl Database {
             })
             .optional()
             .map_err(|e| e.to_string())?;
-        let config = match body {
+        let mut config: crate::manual::Config = match body {
             Some(body) => {
                 if body.len() > 256 * 1024 {
                     return Err("Game Mode settings are too large.".into());
@@ -203,12 +203,17 @@ impl Database {
             }
             None => crate::manual::Config::default(),
         };
+        if config.schema == 1 {
+            config.schema = crate::manual::CONFIG_SCHEMA;
+        }
         crate::manual::validate(&config)?;
         Ok(config)
     }
     pub fn save_manual_settings(&self, config: &crate::manual::Config) -> AppResult<()> {
-        crate::manual::validate(config)?;
-        let body = serde_json::to_string(config).map_err(|e| e.to_string())?;
+        let mut normalized = config.clone();
+        normalized.schema = crate::manual::CONFIG_SCHEMA;
+        crate::manual::validate(&normalized)?;
+        let body = serde_json::to_string(&normalized).map_err(|e| e.to_string())?;
         self.connection.execute("INSERT INTO manual_settings(id,body) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET body=excluded.body", [body]).map_err(|e| e.to_string())?;
         Ok(())
     }

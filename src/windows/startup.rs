@@ -227,7 +227,10 @@ pub fn matching(path: &str) -> NativeResult<Vec<RunEntry>> {
 
 pub fn disable(entry: &RunEntry) -> NativeResult<()> {
     let Some(key) = open(KEY_QUERY_VALUE | KEY_SET_VALUE)? else {
-        return Err(Fault::new(FaultKind::Gone, "Startup entry is already absent."));
+        return Err(Fault::new(
+            FaultKind::Gone,
+            "Startup entry is already absent.",
+        ));
     };
     let Some((current, kind)) = query(key.0, &entry.value_name)? else {
         return Ok(());
