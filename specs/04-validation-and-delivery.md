@@ -53,6 +53,11 @@ Owners: [product](01-product.md), [policy](02-gpu-and-process-policy.md), [recov
 | Expansion beyond limit | Reject entirely; never silently truncate |
 | Protected profile group | Exclude protected group and explain |
 | Empty current matches in manual mode | Honest no-change state, never fallback to wildcard cleanup |
+| Copyable process report | Drag/Ctrl+A/Ctrl+C-ready plain text; no executable paths, command lines, documents, SIDs or account identifiers |
+| Permanent cleanup unsupported source | Report unsupported and make no change; no service/task/kill fallback |
+| Permanent cleanup supported `Run` entry | Backup the exact original value before deletion and verify it is absent afterwards |
+| Permanent cleanup entry changes after review | Abort deletion; preserve the current startup value |
+| Restore startup name conflict | Preserve the conflicting value; never overwrite it |
 | Advanced GUI reopen without confirmed graceful exit | No launch |
 | Reopen file changed/existing instance/desktop unavailable | Explicit skipped/already-running/deferred result |
 | Interruption around launch | Preserve uncertainty; never blind duplicate launch |
@@ -122,6 +127,12 @@ Native smoke checks verify that only the toggle and Settings actions are visible
 All native mutations used test-owned disposable processes. No application or device on the user's computer was changed. The GPU scheduling query returned unavailable (`NTSTATUS 0xc0000022`); the fallback passed, not a GPU priority round trip or FPS benchmark. The existing Advanced GUI reopen fixture actually created and verified its new process on this run; simple manual mode intentionally does not reopen closed applications.
 
 Only application source/tests/docs were published by the temporary validation job. Its token was not granted additional workflow permissions; the normal CI file was left unchanged by that job. Temporary transport/correction scripts and write-enabled validation files are removed from the delivered tree. Ordinary main CI builds the resulting committed source and identifies its own package commit. Its result is checked separately before distributing the binary.
+
+### Version 0.4.0 two-mode cleanup promotion
+
+Promotion gate `34383706618` validated feature source `17ef0a365dd7e836ae84973341e161d788dac134` on GitHub-hosted Windows before updating `main`. The gate runs locked Rust tests, the separately opted-in disposable force fixture, standard-user worker lifecycle fixtures, warning-free Clippy, a release build, native-window smoke and a read-only GPU probe. The Windows test suite also includes a unique test-owned HKCU `Run` value that is created, enumerated, disabled, restored and removed without touching arbitrary user startup entries.
+
+This establishes the tested software behavior on the hosted Windows environment only. It does **not** establish physical gaming performance, third-party service cleanup, driver/HAGS compatibility or FPS improvement on the user's gaming laptop. Permanent cleanup remains limited to the supported current-user `Run` source documented above.
 
 ### Prior evidence
 

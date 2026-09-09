@@ -394,6 +394,7 @@ impl Harness {
         self.db()
             .save_manual_settings(&Config {
                 schema: 1,
+                startup_disabled: vec![],
                 rules: vec![rule],
             })
             .unwrap();
@@ -502,6 +503,7 @@ fn manual_worker_closes_only_a_preapproved_normal_gui() {
     h.db()
         .save_manual_settings(&Config {
             schema: 1,
+            startup_disabled: vec![],
             rules: vec![rule],
         })
         .unwrap();

@@ -10,7 +10,7 @@ P-01: GPU visibility and user-approved application closure are required in the f
 
 P-02: Native Windows application, Rust core and Win32 UI. No Electron, WebView, account, cloud backend, embedded LLM or compulsory overlay. First build/validation target is Windows x64; Windows 11 gaming compatibility must be established separately from hosted Windows CI.
 
-P-03: Overclocking, undervolting, fan/firmware control, permanent debloating, security disabling, kernel patching, driver reset, game injection, anti-cheat bypass and a stripped boot shell are excluded. Do not change game quality, resolution, frame cap, HDR, VRR or frame-generation settings.
+P-03: Overclocking, undervolting, fan/firmware control, irreversible debloating/service deletion, security disabling, kernel patching, driver reset, game injection, anti-cheat bypass and a stripped boot shell are excluded. Reversible, explicitly approved current-user startup cleanup is in scope only when the original startup record is durably backed up before mutation and conflict-safe restoration is available.
 
 P-04: Protect networking, Bluetooth, input, audio, display, security, accessibility, game authentication/anti-cheat and required thermal/device software. No process-name kill list, service-host termination, suspension of arbitrary threads, shader-cache deletion, pagefile disabling or RAM/VRAM purge.
 
@@ -27,6 +27,10 @@ M-03: Normal mode never asks to select a game. First On with no valid permission
 M-04: Cleanup runs once at each On. New or manually reopened processes are not chased. The mode does not promise GPU exclusivity or a blanket GPU ban. Reduce load bundles supported CPU/EcoQoS/memory lowering; GPU scheduling is opt-in for the next activation only and requires its distinct experimental confirmation. No remembered force or reopening permission exists in this simple path.
 
 M-05: Off stops new actions and restores eligible settings via the existing journal. It does not relaunch closed apps or recover unsaved work; disclose this in the app-approval dialog and Settings. Existing advanced reopening behavior remains separate. Turning Off a legacy attached session uses its existing approved recovery behavior, including already approved reopening.
+
+M-07: Settings presents two plain-language choices. **Game Mode only** applies temporary close/reduce actions only at a user-initiated On. **Permanent cleanup** persists across reboots but version 0.4 supports only exact current-user `Run` startup values whose executable token matches the reviewed application. The original value is stored before deletion. Restoration refuses to overwrite a conflicting value. This feature never implies uninstalling the app, disabling services/drivers/tasks, or closing a running process. Unsupported sources have no fallback.
+
+M-08: Settings exposes a copyable process report. The user can drag-select text or use Ctrl+A/Ctrl+C and paste it into support/chat. The report may include PID, application display name, bounded GPU/memory observation and protection status, but excludes executable paths, command lines, document/window content, SIDs and account identifiers.
 
 M-06: A dead worker, unresolved operation or corrupt store must not be displayed as an ordinary successful On/Off transition. Main offers restoration; Settings exposes details and explicit acknowledgement. Recurring rule edits are disabled during active/preparing sessions. System/user protection and current native authorization override saved permission, including foreground-app checks before mutations.
 

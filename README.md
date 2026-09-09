@@ -6,6 +6,16 @@ Rust + Win32. No web runtime, overclocking, permanent debloat, kernel driver, ga
 
 **Development alpha, not a proven FPS booster.** Native code and deterministic/Windows fixture tests are implemented. Actual gaming GPU compatibility, game/anti-cheat behavior and performance improvements remain unmeasured. See [validation evidence](specs/04-validation-and-delivery.md#recorded-evidence).
 
+## New in 0.4.0 — two cleanup choices
+
+Settings now separates **Game Mode only** from **Permanent cleanup**.
+
+- **Game Mode only** is temporary: approved apps may be normally closed or have supported CPU/EcoQoS/memory priorities reduced when you press **Turn ON**. **Turn OFF** restores settings changed by the optimizer; it does not resurrect closed apps or unsaved work.
+- **Permanent cleanup** is deliberately narrow and reversible in 0.4.0: it can disable an exact matching **current-user Windows `Run` startup entry** after backing up the original value. It does **not** uninstall applications, disable Windows services/drivers/scheduled tasks, change security features, or force-close a running process. Unsupported startup sources are left untouched.
+- **Copy / paste process list** opens a read-only text view. Drag-select text, or press **Ctrl+A → Ctrl+C**, and paste it directly into ChatGPT. The copied report omits executable paths, command lines, document/window content, SIDs, and account identifiers.
+
+The Settings list also adds plain-language hints such as **Web browser**, **Overlay / monitoring**, **Developer tool**, **Apple sync / discovery**, **Audio hardware software**, and **ASUS utility**. These hints are guidance, not automatic permission: unknown and unapproved apps remain untouched.
+
 ## New in 0.3.0 — just Game Mode ON / OFF
 
 The default window now has **Turn ON / Turn OFF** and **Settings**. There is no game browser or game-process selection. You can switch it on before opening Steam, start or switch games normally, then switch it off when finished. Game exit does not switch off a manual session.
@@ -30,6 +40,7 @@ The old process grid, per-game recipes and optional reopening remain available u
 | Supporting policies | CPU priority, queryable EcoQoS and memory priority; never raise an already lower background priority |
 | Profiles and app groups | Default saved background-app permissions; optional Advanced per-game recipes and explicit executable grouping |
 | Optional reopening | Advanced only: separately approved GUI executable after confirmed graceful close, with file/desktop checks and durable no-retry launch intent |
+| Permanent cleanup | Reversible exact current-user `Run` startup disable/restore with backup-before-delete and conflict-safe restore; no service/task/driver fallback |
 | Recovery | Durable SQLite intent before mutation; exact original values; PID/creation time/user/logon/file identity; external-change conflicts are preserved |
 | Ownership and protection | One controller per user store; one unfinished database session; private recovery directory; known essential and user-protected apps excluded |
 
@@ -42,7 +53,7 @@ A successful **Windows** GitHub Actions run produces `process-optimizer-windows-
 **Run normally, not as administrator. Save open work first.** Starting the application does not activate cleanup; no background apps are preapproved and experimental GPU scheduling is off by default.
 
 1. Extract the ZIP and open `process-optimizer.exe` normally, not as administrator.
-2. For first-use permissions, open **Settings**. Choose optional background apps, confirm a normal-close or Reduce load rule, then select **Done**. Do not approve games or apps needed for voice, accessibility, controllers or device management.
+2. Open **Settings**. For temporary gaming cleanup, choose **Close during Game Mode** or **Reduce during Game Mode**. For an unused app that actually has a supported current-user Windows startup entry, choose **Disable Windows startup**. Use **Restore Windows startup** to undo that persistent change.
 3. Press **Turn ON**. No game selection is needed. Start your game normally.
 4. When finished, press **Turn OFF**. **Settings > Session details** contains exact outcomes; **Advanced tools** preserves the earlier explicit session controls.
 

@@ -77,6 +77,14 @@ L-06: CPU policies are secondary and MUST NOT be labeled GPU blocking. A success
 
 L-07: No arbitrary `SuspendThread`/process suspension as a GPU-pause substitute: synchronization owners can deadlock, and it is not a verified GPU-memory-release operation. No arbitrary Job Object attachment for a temporary policy, because an existing process cannot be detached. Do not use job I/O rate control marked unsupported on Windows 10 1607 and later. [S14][S15]
 
+## Persistent startup cleanup
+
+Persistent cleanup is **not** a gaming-session process mutation. Version 0.4 may enumerate and edit only `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` string values. An entry is eligible only when its first executable token can be conservatively resolved to the reviewed canonical executable. Environment-variable or shell-command ambiguity is unsupported.
+
+Before deletion, store the exact value name, command string and value kind. Re-read immediately before deleting it; observable drift cancels the operation. Restoration never overwrites another value using the same name. No process is terminated by this action.
+
+Do not fall back to disabling machine-wide startup, services, drivers, scheduled tasks, security software, device/audio/Bluetooth components, shell components or vendor utilities that cannot be attributed through the supported source. Future service/task cleanup requires its own owner contract, privilege design, dependency checks and native tests.
+
 ## Unsupported features and future adapters
 
 Missing pause/service/CPU-set/launcher adapters return explicit unsupported/not implemented results. They never fall back to process suspension, cascading service stops or registry edits. An app adapter must define discovery, identity, readable prior state, supported operation, bounded verification, recovery and effect tests before registration.
