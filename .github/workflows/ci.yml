@@ -1,0 +1,61 @@
+name: Native Windows build and recovery tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.90.0 --profile minimal --component clippy --component rustfmt
+      - run: cargo test --lib
+      - run: cargo clippy --lib
+      - name: Record resolved dependencies
+        run: cat Cargo.lock
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.90.0 --profile minimal --component clippy --component rustfmt
+      - name: Native API tests (only test-owned fixture processes are changed)
+        run: cargo test --all-targets -- --nocapture
+      - name: Native code review checks
+        run: cargo clippy --all-targets
+      - name: Build portable application
+        run: cargo build --release --bin process-optimizer
+      - name: Native window creation smoke test and read-only GPU probe
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $exe = (Resolve-Path target/release/process-optimizer.exe).Path
+          $p = Start-Process -FilePath $exe -ArgumentList '--ui-smoke' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw 'Native UI smoke test failed' }
+          $probe = Join-Path $pwd 'dist/ci.probe.json'
+          $p = Start-Process -FilePath $exe -ArgumentList @('--probe', $probe) -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw 'Read-only GPU probe failed' }
+          Get-Content $probe | Select-Object -First 30
+      - name: Package portable executable
+        shell: pwsh
+        run: |
+          Copy-Item target/release/process-optimizer.exe dist/
+          Copy-Item README.md dist/
+          Set-Content -Path dist/SOURCE-COMMIT.txt -Value '${{ github.sha }}' -Encoding utf8
+          Compress-Archive -Path dist/process-optimizer.exe,dist/README.md,dist/SOURCE-COMMIT.txt -DestinationPath dist/process-optimizer-windows-x64.zip
+          $hash = (Get-FileHash dist/process-optimizer-windows-x64.zip -Algorithm SHA256).Hash
+          "$hash  process-optimizer-windows-x64.zip" | Set-Content dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: process-optimizer-windows-x64-${{ github.sha }}
+          path: |
+            dist/process-optimizer-windows-x64.zip
+            dist/SHA256SUMS.txt
+          retention-days: 30
+          if-no-files-found: error

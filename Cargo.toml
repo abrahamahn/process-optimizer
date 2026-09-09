@@ -1,0 +1,39 @@
+[package]
+name = "process-optimizer"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "GPU-first, consent-based native Windows game-session optimizer"
+publish = false
+
+[lib]
+name = "process_optimizer"
+path = "src/lib.rs"
+
+[[bin]]
+name = "process-optimizer"
+path = "src/main.rs"
+
+[[bin]]
+name = "optimizer-test-fixture"
+path = "src/bin/fixture.rs"
+
+[dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.145"
+rusqlite = { version = "=0.32.1", features = ["bundled"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = [
+  "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization",
+  "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_LibraryLoader", "Win32_System_SystemInformation",
+  "Win32_System_Performance", "Win32_Storage_FileSystem",
+  "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls",
+  "Win32_UI_Controls_Dialogs", "Win32_UI_HiDpi", "Win32_Graphics_Gdi"
+] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "debuginfo"

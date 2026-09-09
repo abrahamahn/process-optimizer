@@ -1,6 +1,6 @@
 # Repository instructions
 
-Read `README.md` and the relevant owner specification before implementation. This repository currently contains specifications only; do not describe proposed behavior as implemented or benchmarked.
+Read `README.md` and the relevant owner specification before implementation. The native implementation is an alpha; distinguish written code, passing Windows integration tests and real-hardware performance evidence.
 
 ## Authority
 
@@ -19,8 +19,10 @@ Use Rust and native Windows UI/API calls; keep unsafe FFI narrow and reviewed. A
 
 Preserve protected functionality. No overclocking, security disabling, kernel patching, anti-cheat bypass, game injection, arbitrary shell execution, blanket process killing or undocumented registry tweaks.
 
-Persist recovery intent before mutations. Process identity is not just a PID or executable name. Closing and reopening an app is not restoring its unsaved state. Never claim a GPU hard quota or guaranteed exclusive GPU access without a separately verified mechanism.
+Persist recovery intent before mutations. Process identity is not just a PID or executable name. Closing and reopening an app is not restoring its unsaved state. Never claim a GPU hard quota or guaranteed exclusive GPU access without a separately verified mechanism. Recovery never replays a close operation.
 
-Tests must distinguish pure policy tests, Windows integration tests, recovery fault injection and real-hardware performance measurements. Do not run destructive tests against arbitrary user applications. Use controlled fixtures and explicit test opt-in.
+Tests distinguish pure policy tests, Windows integration tests, recovery fault injection and real-hardware performance measurements. Never run destructive tests against arbitrary user applications. Mutation tests own fixture process handles; force tests require explicit opt-in.
+
+Run `cargo test --lib` cross-platform and `cargo test --all-targets` on Windows. Build the native application and run read-only/UI smoke probes before packaging. Do not equate a hosted CI runner with a physical gaming GPU.
 
 Read the current remote HEAD before editing; preserve unrelated work and do not force-push. Do not publish machine inventories, raw traces, local paths, process command lines, credentials or user documents to this public repository.
