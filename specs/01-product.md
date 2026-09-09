@@ -45,6 +45,14 @@ U-08: Settings consist of protected apps and visible capability/experimental-pol
 
 U-09: Native controls must be keyboard reachable, have textual labels, follow system font/contrast conventions, resize without hiding Restore and support high-DPI text. Accessibility and visual review are a release gate, not implied by successful compilation.
 
+## Explicit application workflows
+
+U-10: Same-app selection groups only matching observed canonical executable path/file ID, owner SID, logon and Windows session. It selects a finite maximum of 32 rows without granting permission. Different executable helpers, unobserved members and future children are excluded. Whole-app closure is not inferred from these groups.
+
+U-11: A per-game profile is a local recipe, not authorization. Save/load/delete are explicit UI actions. The profile is keyed by canonical game path and binds executable file ID. A changed game file ID requires renewed review/save; missing, replaced or protected target groups are reported instead of silently selected. A file ID is not a content hash: same-file in-place updates may retain the recipe match, never the prior consent. Loading re-enumerates and constructs fresh exact identities, never old PID approval. At most 32 recipes and 32 targets per recipe; expansion above 32 processes fails without a truncated plan. Force actions cannot be saved; reopening and experimental GPU permissions are discarded. Profile capture retains no process command lines, document data or session tokens. Every loaded plan still requires Start review.
+
+U-12: Reopen after close is an independent per-main-GUI-process opt-in, removable before Start and absent from saved profiles. Only verified graceful closure by this session qualifies. The ordinary local GUI executable must match the recorded file ID, size and last-write time, with a held read-only/no-write-or-delete-share file handle through launch. No shell or captured arguments. Existing or unverifiable replacement instances prevent duplicate startup. An unavailable/locked/disconnected interactive desktop yields a terminal Deferred outcome requiring manual reopening, not an unattended later retry. An uncertain launch blocks automatic retries and remains visible for review. API checks are conservative snapshots, not atomic guarantees against all desktop/filesystem races.
+
 ## Consent
 
 C-01: Every action requires session-scoped review of exact target identity, operation, reason, save-state uncertainty and recovery category. Explicit confirmation that optional targets are nonessential is necessary; high resource usage is never permission. Hard protection still overrides consent.

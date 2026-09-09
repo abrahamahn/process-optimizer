@@ -1,6 +1,18 @@
 use crate::{journal::Journal, model::*, policy};
 
 pub trait Backend {
+    fn validate_reopen(&mut self, _id: &Identity, _approval: &ReopenApproval) -> NativeResult<()> {
+        Err(Fault::new(
+            FaultKind::Unsupported,
+            "GUI reopening is unavailable on this backend.",
+        ))
+    }
+    fn reopen(&mut self, _id: &Identity, _approval: &ReopenApproval) -> NativeResult<ReopenRecord> {
+        Err(Fault::new(
+            FaultKind::Unsupported,
+            "GUI reopening is unavailable on this backend.",
+        ))
+    }
     /// Revalidate identity, ownership, critical status, game family and protected paths.
     fn authorize(&mut self, id: &Identity) -> NativeResult<()>;
     fn read(&mut self, id: &Identity, property: Property) -> NativeResult<Value>;
@@ -13,6 +25,7 @@ pub fn apply<B: Backend, J: Journal>(s: &mut Session, b: &mut B, j: &mut J) -> A
         || s.stage != Stage::Pending
         || !s.changes.is_empty()
         || !s.closed.is_empty()
+        || !s.reopened.is_empty()
     {
         return Err("Only a fresh, current-schema session may apply changes; recover existing records instead.".into());
     }
@@ -24,6 +37,10 @@ pub fn apply<B: Backend, J: Journal>(s: &mut Session, b: &mut B, j: &mut J) -> A
                 action.target.pid, e.message
             )
         })?;
+        if let Some(approval) = &action.reopen {
+            b.validate_reopen(&action.target, approval)
+                .map_err(|e| e.message)?;
+        }
     }
     s.stage = Stage::Preparing;
     j.save(s)?;
@@ -253,13 +270,17 @@ pub fn restore<B: Backend, J: Journal>(s: &mut Session, b: &mut B, j: &mut J) ->
         }
         j.save(s)?;
     }
+    crate::reopen::restore_apps(s, b, j)?;
     let uncertain_close = s.closed.iter().any(|c| {
         matches!(
             c.state,
             CloseState::IntentRecorded | CloseState::RequestedPending
         )
     });
-    s.stage = if s.changes.iter().all(|c| c.state.resolved()) && !uncertain_close {
+    s.stage = if s.changes.iter().all(|c| c.state.resolved())
+        && !uncertain_close
+        && s.reopened.iter().all(|r| r.state.resolved())
+    {
         Stage::Restored
     } else {
         Stage::RecoveryNeeded
@@ -350,7 +371,11 @@ mod tests {
                 session_id: 1,
                 provenance: fixture_provenance(),
             }),
-            actions: vec![ApprovedAction { target: id, action }],
+            actions: vec![ApprovedAction {
+                target: id,
+                action,
+                reopen: None,
+            }],
             protected_paths: vec![],
             options: Options {
                 gpu_priority: true,

@@ -1,6 +1,7 @@
 //! Native Windows adapters. No injection, driver loading, registry tweaks or service disabling.
 pub mod gpu;
 pub mod process;
+pub mod reopen;
 pub mod runner;
 pub mod storage;
 pub mod ui;

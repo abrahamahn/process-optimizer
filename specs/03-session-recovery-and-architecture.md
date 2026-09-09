@@ -110,6 +110,14 @@ R-05: Reopen intent must be persisted before launching. If the controller dies a
 
 R-06: Manual acknowledgement requires displaying unresolved actions and an explicit warning that acknowledgement is not restoration. Keep the original record as Acknowledged. It only releases the new-session gate; it must never execute an unreviewed repair or delete evidence.
 
+## Application-workflow records
+
+Session schema 3 adds optional per-action executable reopening approval (file ID/size/last-write time) and separate launch records. Schema 2 can be read and recovered only without these capabilities; new sessions use schema 3. No in-place upgrade fabricates consent. Finished records remain read-only. The SQLite storage schema remains version 1 with an additive profiles table; old binaries cannot parse schema-3 active sessions and must not be used to recover them.
+
+A profile uses its own typed schema and stores executable recipes, not process lifetimes or consent. Profile writes have size/count validation and a transaction protecting the 32-profile limit. Replacing/deleting recipes does not alter sessions or protection. Loading yields only an unapproved review.
+
+Launch outcomes are IntentRecorded, Started (verified new lifetime, not GUI-readiness proof), AlreadyRunning, Deferred, Skipped, Indeterminate and explicitly UserKept. Recovery persists launch intent before calling the native adapter. On interruption an existing launch intent becomes Indeterminate and is never replayed. Deferred is a known no-launch outcome that requires manual reopening, not an automatic retry. Indeterminate remains unresolved until explicit acknowledgement. Reopening failure cannot erase settings-recovery conflicts. Reopening authorization/records are checked against the immutable close action and its verified closure.
+
 ## Security, privacy and maintenance
 
 No arbitrary privileged shell execution or raw command-line replay. The agent revalidates typed inputs even when the UI generated them. Same-user code is not treated as a security boundary stronger than the user's existing authority; the initial product refuses elevation and remote operation.

@@ -190,6 +190,12 @@ pub fn acknowledge() -> AppResult<()> {
                     .into();
         }
     }
+    for item in &mut s.reopened {
+        if !item.state.resolved() {
+            item.state = ReopenState::UserKept;
+            item.detail = "User acknowledged an uncertain launch; no launch was retried.".into();
+        }
+    }
     s.note("User accepted unresolved settings. This is not a fully restored session.");
     s.stage = Stage::UserAcknowledged;
     db.save(&s)?;

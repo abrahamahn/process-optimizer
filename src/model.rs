@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 pub type AppResult<T> = Result<T, String>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -56,6 +56,8 @@ pub enum ActionKind {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovedAction {
+    #[serde(default)]
+    pub reopen: Option<ReopenApproval>,
     pub target: Identity,
     pub action: ActionKind,
 }
@@ -230,6 +232,8 @@ impl Stage {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Session {
+    #[serde(default)]
+    pub reopened: Vec<ReopenRecord>,
     pub schema: u32,
     pub id: String,
     pub stage: Stage,
@@ -245,6 +249,7 @@ impl Session {
     pub fn new(id: String, plan: Plan) -> Self {
         Self {
             schema: SCHEMA_VERSION,
+            reopened: vec![],
             id,
             stage: Stage::Pending,
             plan,
@@ -294,4 +299,37 @@ pub(crate) fn fixture_provenance() -> Option<Provenance> {
         logon_id: 10,
         image_file_id: "fixture-file".into(),
     })
+}
+
+/// A fresh per-session approval, not stored in a game profile.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReopenApproval {
+    pub image_file_id: String,
+    pub file_size: u64,
+    pub modified: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReopenState {
+    IntentRecorded,
+    Started,
+    AlreadyRunning,
+    Deferred,
+    Skipped,
+    Indeterminate,
+    UserKept,
+}
+impl ReopenState {
+    pub fn resolved(&self) -> bool {
+        !matches!(self, Self::IntentRecorded | Self::Indeterminate)
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReopenRecord {
+    pub target: Identity,
+    pub state: ReopenState,
+    pub child: Option<Identity>,
+    pub detail: String,
 }

@@ -28,6 +28,7 @@ fn session(action: ActionKind) -> Session {
             game_path: game.path.clone(),
             game: Some(game),
             actions: vec![ApprovedAction {
+                reopen: None,
                 target: id(20),
                 action,
             }],
@@ -232,6 +233,7 @@ fn ambiguous_setter_stops_later_actions_and_keeps_original_for_recovery() {
     let mut s = session(ActionKind::LowerPriorities);
     let (mut b, mut j) = setup();
     s.plan.actions.push(ApprovedAction {
+        reopen: None,
         target: id(21),
         action: ActionKind::Close,
     });

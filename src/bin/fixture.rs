@@ -1,6 +1,13 @@
 //! Benign test-owned process. Never distributed in the application artifact.
+#![cfg_attr(windows, windows_subsystem = "windows")]
 fn main() {
-    if std::env::args().any(|v| v == "--window") {
+    if std::env::args().any(|v| v == "--window")
+        || std::env::current_exe()
+            .ok()
+            .and_then(|p| p.file_name().map(|v| v.to_string_lossy().to_lowercase()))
+            .as_deref()
+            == Some("reopen-fixture.exe")
+    {
         #[cfg(windows)]
         {
             window();
@@ -21,6 +28,10 @@ fn window() {
         Foundation::*, System::LibraryLoader::GetModuleHandleW, UI::WindowsAndMessaging::*,
     };
     unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+        if m == WM_TIMER {
+            DestroyWindow(h);
+            return 0;
+        }
         if m == WM_DESTROY {
             PostQuitMessage(0);
             return 0;
@@ -52,6 +63,7 @@ fn window() {
         if h.is_null() {
             std::process::exit(1);
         }
+        SetTimer(h, 1, 45000, None);
         let mut msg = zeroed();
         while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
             TranslateMessage(&msg);

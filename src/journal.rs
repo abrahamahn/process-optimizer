@@ -23,14 +23,17 @@ impl Database {
             .map_err(|e| e.to_string())?;
         c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;
             CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, body TEXT NOT NULL, finished INTEGER NOT NULL, stop INTEGER NOT NULL DEFAULT 0, sequence INTEGER NOT NULL);
-            CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL);").map_err(|e| e.to_string())?;
+            CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS profiles (game_path TEXT PRIMARY KEY, body TEXT NOT NULL);").map_err(|e| e.to_string())?;
         c.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS one_unfinished_session ON sessions(finished) WHERE finished=0; PRAGMA user_version=1;").map_err(|e| e.to_string())?;
         Ok(Self { connection: c })
     }
 
     pub fn create(&mut self, session: &Session) -> AppResult<()> {
         integrity::validate_record(session)?;
-        if session.stage != Stage::Pending
+        if session.schema != SCHEMA_VERSION
+            || !session.reopened.is_empty()
+            || session.stage != Stage::Pending
             || !session.changes.is_empty()
             || !session.closed.is_empty()
         {
@@ -100,7 +103,7 @@ impl Database {
         }
         let session: Session =
             serde_json::from_str(body).map_err(|e| format!("Unreadable recovery journal: {e}"))?;
-        if session.schema != SCHEMA_VERSION {
+        if session.schema != SCHEMA_VERSION && session.schema != 2 {
             return Err(
                 "Unsupported journal version. Preserve it for recovery with the matching version."
                     .into(),
@@ -124,6 +127,61 @@ impl Database {
             })
             .map(|v| v != 0)
             .map_err(|e| e.to_string())
+    }
+
+    pub fn save_profile(&mut self, profile: &crate::profiles::GameProfile) -> AppResult<()> {
+        crate::profiles::validate(profile)?;
+        let body = serde_json::to_string(profile).map_err(|e| e.to_string())?;
+        let t = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        let count: usize = t
+            .query_row(
+                "SELECT COUNT(*) FROM profiles WHERE game_path != ?1",
+                [&profile.game.path],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if count >= crate::profiles::MAX_PROFILES {
+            return Err("Profile limit reached. Delete a profile before adding another.".into());
+        }
+        t.execute("INSERT INTO profiles(game_path,body) VALUES(?1,?2) ON CONFLICT(game_path) DO UPDATE SET body=excluded.body", params![profile.game.path, body]).map_err(|e| e.to_string())?;
+        t.commit().map_err(|e| e.to_string())
+    }
+    pub fn profile(&self, game_path: &str) -> AppResult<Option<crate::profiles::GameProfile>> {
+        let key = crate::policy::normalized_path(game_path);
+        let body: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT body FROM profiles WHERE game_path=?1",
+                [&key],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        body.map(|body| {
+            if body.len() > 256 * 1024 {
+                return Err("Profile exceeds its size bound.".into());
+            }
+            let p: crate::profiles::GameProfile =
+                serde_json::from_str(&body).map_err(|e| e.to_string())?;
+            crate::profiles::validate(&p)?;
+            if p.game.path != key {
+                return Err("Profile key does not match its game.".into());
+            }
+            Ok(p)
+        })
+        .transpose()
+    }
+    pub fn delete_profile(&self, game_path: &str) -> AppResult<()> {
+        self.connection
+            .execute(
+                "DELETE FROM profiles WHERE game_path=?1",
+                [crate::policy::normalized_path(game_path)],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub fn settings(&self) -> AppResult<Settings> {
@@ -193,6 +251,30 @@ mod tests {
                 experimental_consent: true,
             },
         )
+    }
+    #[test]
+    fn stored_schema_two_sessions_remain_recoverable_without_new_launch_permission() {
+        let mut db = Database::open(Path::new(":memory:")).unwrap();
+        let mut original = session("legacy");
+        db.create(&original).unwrap();
+        original.schema = 2;
+        original.stage = Stage::Active;
+        let mut value = serde_json::to_value(&original).unwrap();
+        value.as_object_mut().unwrap().remove("reopened");
+        let legacy = serde_json::to_string(&value).unwrap();
+        db.connection
+            .execute("UPDATE sessions SET body=?1 WHERE id='legacy'", [&legacy])
+            .unwrap();
+        assert_eq!(db.get("legacy").unwrap().schema, 2);
+        assert_eq!(db.latest().unwrap().unwrap().schema, 2);
+        let mut recovered = db.active().unwrap().unwrap();
+        assert!(recovered.reopened.is_empty());
+        recovered.stage = Stage::Restored;
+        db.save(&recovered).unwrap();
+        assert_eq!(db.get("legacy").unwrap().schema, 2);
+        assert!(db.active().unwrap().is_none());
+        db.create(&session("new-reviewed-session")).unwrap();
+        assert_eq!(db.active().unwrap().unwrap().schema, SCHEMA_VERSION);
     }
     #[test]
     fn only_one_unfinished_session() {

@@ -20,6 +20,11 @@ use windows_sys::Win32::{
     UI::{Controls::Dialogs::*, HiDpi::*, WindowsAndMessaging::*},
 };
 
+const GROUP: u16 = 70;
+const PROFILE_SAVE: u16 = 71;
+const PROFILE_LOAD: u16 = 72;
+const PROFILE_DELETE: u16 = 73;
+const REOPEN: u16 = 74;
 const GAME: u16 = 10;
 const BROWSE: u16 = 11;
 const USE_GAME: u16 = 12;
@@ -167,6 +172,15 @@ impl State {
         self.widget(BROWSE, "BUTTON", "Browse game .exe", WS_TABSTOP)?;
         self.widget(USE_GAME, "BUTTON", "Use selected as game", WS_TABSTOP)?;
         self.widget(REFRESH, "BUTTON", "Refresh GPU sample", WS_TABSTOP)?;
+        for (id, label) in [
+            (GROUP, "Select same app"),
+            (PROFILE_SAVE, "Save game profile"),
+            (PROFILE_LOAD, "Load game profile"),
+            (PROFILE_DELETE, "Delete game profile"),
+            (REOPEN, "Reopen after close..."),
+        ] {
+            self.widget(id, "BUTTON", label, WS_TABSTOP)?;
+        }
         self.widget(102, "STATIC", "PID       Application                 GPU peak    Dedicated MiB   Planned action / protection", 0)?;
         self.widget(
             LIST,
@@ -210,7 +224,7 @@ impl State {
                     | if id == OPT_LAUNCH { WS_DISABLED } else { 0 },
             )?;
         }
-        self.widget(DETAILS, "EDIT", "Select processes with Ctrl/Shift, then choose an action.\r\nClosing an app is not a memory snapshot. Unsaved work cannot be restored.\r\nLower GPU priority is an experimental scheduling hint, not a GPU usage cap or exclusive reservation.", ES_MULTILINE as u32 | ES_READONLY as u32 | ES_AUTOVSCROLL as u32 | WS_VSCROLL)?;
+        self.widget(DETAILS, "EDIT", "Select processes with Ctrl/Shift, then choose an action.\r\nClosing an app is not a memory snapshot. Unsaved work cannot be restored.\r\nLower GPU priority is an experimental scheduling hint, not a GPU usage cap or exclusive reservation.", ES_MULTILINE as u32 | ES_READONLY as u32 | ES_AUTOVSCROLL as u32 | WS_VSCROLL | WS_TABSTOP)?;
         for (id, label) in [
             (START, "START GAME SESSION"),
             (RESTORE, "Restore now"),
@@ -334,10 +348,17 @@ impl State {
         put(BROWSE, w - 488, 72, 146, 30);
         put(USE_GAME, w - 334, 72, 162, 30);
         put(REFRESH, w - 164, 72, 148, 30);
-        put(102, 16, 112, inner, 22);
-        let list_height = (h - 440).max(180);
-        put(LIST, 16, 136, inner, list_height);
-        let y = 136 + list_height;
+        let recipe_w = (inner - 32) / 5;
+        for (i, id) in [GROUP, PROFILE_SAVE, PROFILE_LOAD, PROFILE_DELETE, REOPEN]
+            .iter()
+            .enumerate()
+        {
+            put(*id, 16 + i as i32 * (recipe_w + 8), 110, recipe_w, 32);
+        }
+        put(102, 16, 150, inner, 22);
+        let list_height = (h - 480).max(140);
+        put(LIST, 16, 174, inner, list_height);
+        let y = 174 + list_height;
         put(GPU_STATUS, 16, y + 5, inner, 42);
         let button_w = (inner - 32) / 5;
         for (i, id) in [LOWER, CLOSE, FORCE, PROTECT, KEEP].iter().enumerate() {
@@ -398,11 +419,16 @@ impl State {
             .collect()
     }
     fn repopulate(&self) {
+        let selected: Vec<_> = self
+            .selected()
+            .into_iter()
+            .map(|i| self.snapshot.processes[i].identity.clone())
+            .collect();
         unsafe {
             SendMessageW(self.h(LIST), WM_SETREDRAW, 0, 0);
             SendMessageW(self.h(LIST), LB_RESETCONTENT, 0, 0);
         }
-        for p in &self.snapshot.processes {
+        for (index, p) in self.snapshot.processes.iter().enumerate() {
             let name: String = p.name.chars().take(26).collect();
             let gpu = busiest_engine(&p.gpu)
                 .map(|v| format!("{v:5.1}%"))
@@ -425,7 +451,15 @@ impl State {
             } else if let Some(reason) = &p.protected_reason {
                 format!("PROTECTED: {reason}")
             } else if let Some(action) = self.actions.get(&p.identity.pid) {
-                format!("{:?}", action.action)
+                format!(
+                    "{:?}{}",
+                    action.action,
+                    if action.reopen.is_some() {
+                        " + reopen approved"
+                    } else {
+                        ""
+                    }
+                )
             } else {
                 "Keep (default)".into()
             };
@@ -435,6 +469,12 @@ impl State {
             );
             unsafe {
                 SendMessageW(self.h(LIST), LB_ADDSTRING, 0, wide(&row).as_ptr() as LPARAM);
+                if selected
+                    .iter()
+                    .any(|id| policy::same_process(id, &p.identity))
+                {
+                    SendMessageW(self.h(LIST), LB_SETSEL, 1, index as LPARAM);
+                }
             }
         }
         unsafe {
@@ -460,12 +500,148 @@ impl State {
         let mut text = String::from("APPROVAL PLAN — exact processes, this session only\r\n");
         for action in self.actions.values() {
             text.push_str(&format!(
-                "{:?}: PID {}  {}\r\n",
-                action.action, action.target.pid, action.target.path
+                "{:?}: PID {}  {}{}\r\n",
+                action.action,
+                action.target.pid,
+                action.target.path,
+                if action.reopen.is_some() {
+                    " [separate reopen approval: new GUI process only]"
+                } else {
+                    ""
+                }
             ));
         }
-        text.push_str("\r\nA helper process exiting does not prove the entire application exited. Unselected/new helpers are never force-closed.\r\nGPU priority is not a usage cap. No documents, RAM contents, tabs or unsaved work are snapshotted. No automatic relaunch.");
+        text.push_str("\r\nA helper process exiting does not prove the entire application exited. Unselected/new helpers are never force-closed.\r\nGPU priority is not a usage cap. No documents, RAM contents, tabs or unsaved work are snapshotted. Only explicitly reopen-approved GUI apps may be launched again; all others remain closed.");
         self.text(DETAILS, &text);
+    }
+    fn select_app_group(&mut self) -> AppResult<()> {
+        let selected = self.selected();
+        if selected.len() != 1 {
+            return Err(
+                "Select one process, then expand its currently observed executable group.".into(),
+            );
+        }
+        let group = crate::applications::group(
+            &self.snapshot.processes,
+            &self.snapshot.processes[selected[0]].identity,
+        )?;
+        unsafe {
+            SendMessageW(self.h(LIST), LB_SETSEL, 0, -1);
+        }
+        for (index, row) in self.snapshot.processes.iter().enumerate() {
+            if group
+                .iter()
+                .any(|id| policy::same_process(id, &row.identity))
+            {
+                unsafe {
+                    SendMessageW(self.h(LIST), LB_SETSEL, 1, index as LPARAM);
+                }
+            }
+        }
+        self.text(DETAILS, &format!("Selected {} current processes sharing executable, user, logon and Windows session.\r\nNo action has been approved. Choose an action and review the finite list. Different executable helpers and future children are excluded.", group.len()));
+        Ok(())
+    }
+    fn save_profile(&mut self) -> AppResult<()> {
+        self.update_settings();
+        let game = self
+            .game
+            .as_ref()
+            .ok_or("Select the actual running game first.")?;
+        let profile = crate::profiles::capture(
+            game,
+            &self.actions.values().cloned().collect::<Vec<_>>(),
+            &self.settings.options,
+        )?;
+        if profile.targets.is_empty() {
+            return Err("Build a nonempty plan before saving a profile.".into());
+        }
+        if !confirm(self.window, "Save or replace the recipe for this game?\n\nLoading only creates a review for CURRENT executable groups. No automatic activation or saved consent. Force, app-reopening and experimental GPU approvals are never saved.") { return Ok(()); }
+        runner::database()?.save_profile(&profile)?;
+        self.text(STATUS, "Game profile saved locally. Load it explicitly next time; Start always needs a fresh review.");
+        Ok(())
+    }
+    fn load_profile(&mut self) -> AppResult<()> {
+        self.update_settings();
+        let game = self
+            .game
+            .as_ref()
+            .ok_or("Select the actual running game before loading a profile.")?;
+        let profile = runner::database()?
+            .profile(&game.path)?
+            .ok_or("No saved profile exists for this game.")?;
+        if !self.actions.is_empty() && !confirm(self.window, "Replace the current unsent preview with this game's saved recipe? No process will be changed until you review and Start.") { return Ok(()); }
+        let rows = process::enumerate().map_err(|e| e.message)?;
+        let preview =
+            crate::profiles::resolve(&profile, game, &rows, &self.settings.protected_paths)?;
+        unsafe {
+            SendMessageW(self.h(LIST), LB_SETSEL, 0, -1);
+        }
+        self.snapshot.processes = rows;
+        self.actions = preview
+            .actions
+            .into_iter()
+            .map(|a| (a.target.pid, a))
+            .collect();
+        self.settings.options = preview.options;
+        for (id, checked) in [
+            (OPT_GPU, false),
+            (OPT_CPU, self.settings.options.cpu_priority),
+            (OPT_ECO, self.settings.options.eco_qos),
+            (OPT_MEMORY, self.settings.options.memory_priority),
+        ] {
+            self.set_check(id, checked);
+        }
+        self.repopulate();
+        self.plan_preview();
+        let text = format!(
+            "{}\r\n\r\nPROFILE RESOLUTION\r\n{}",
+            self.edit_text(DETAILS),
+            preview.notices.join("\r\n")
+        );
+        self.text(DETAILS, &text);
+        self.text(GPU_STATUS, "Profile resolved against a fresh process inventory. Refresh GPU sample for new measurements.");
+        self.text(
+            STATUS,
+            "Profile loaded as an unapproved preview. Review every current process before Start.",
+        );
+        Ok(())
+    }
+    fn delete_profile(&mut self) -> AppResult<()> {
+        self.update_settings();
+        if self.settings.game_path.is_empty() {
+            return Err("Select a game first.".into());
+        }
+        if confirm(self.window, "Delete the saved recipe for this game? This will not change running processes, protection or recovery records.") {
+            runner::database()?.delete_profile(&self.settings.game_path)?;
+            self.text(STATUS, "Game profile removed. Active sessions and recovery evidence were not changed.");
+        }
+        Ok(())
+    }
+    fn toggle_reopen(&mut self) -> AppResult<()> {
+        let selected = self.selected();
+        if selected.len() != 1 {
+            return Err("Select exactly one main GUI process already marked Close gracefully. Helpers must not be reopened separately.".into());
+        }
+        let id = self.snapshot.processes[selected[0]].identity.clone();
+        let action = self
+            .actions
+            .get(&id.pid)
+            .ok_or("First mark the main GUI process Close gracefully.")?;
+        if action.action != ActionKind::Close {
+            return Err(
+                "Reopening is supported only after a reviewed graceful-close action.".into(),
+            );
+        }
+        if action.reopen.is_some() {
+            self.actions.get_mut(&id.pid).unwrap().reopen = None;
+        } else {
+            let approval = super::reopen::approval(&id).map_err(|e| e.message)?;
+            if !confirm(self.window, &format!("SEPARATE APP-REOPENING APPROVAL\n\nPID {} — {}\n\nAfter this session verifies graceful closure, allow ONE new GUI launch when restoring? No arguments, document state, tabs or memory will be restored. An existing instance, changed executable, locked/disconnected desktop or uncertain launch prevents automatic reopening. Deferred apps must be reopened manually. This approval is not saved in profiles.", id.pid, id.path)) { return Ok(()); }
+            self.actions.get_mut(&id.pid).unwrap().reopen = Some(approval);
+        }
+        self.repopulate();
+        self.plan_preview();
+        Ok(())
     }
     fn mark(&mut self, action: Option<ActionKind>) -> AppResult<()> {
         let selected = self.selected();
@@ -478,6 +654,16 @@ impl State {
                 let row = &self.snapshot.processes[index];
                 if let Some(reason) = &row.protected_reason {
                     return Err(format!("{} is protected: {reason}", row.name));
+                }
+                if let Some(game) = &self.game {
+                    if !crate::applications::eligible(
+                        row,
+                        game,
+                        &self.snapshot.processes,
+                        &self.settings.protected_paths,
+                    ) {
+                        return Err("The selection contains game-family, other-session or protected processes.".into());
+                    }
                 }
                 if self
                     .game
@@ -493,12 +679,24 @@ impl State {
                 }
             }
         }
+        let additional = selected
+            .iter()
+            .filter(|i| {
+                !self
+                    .actions
+                    .contains_key(&self.snapshot.processes[**i].identity.pid)
+            })
+            .count();
+        if action.is_some() && self.actions.len() + additional > 32 {
+            return Err("The reviewed plan is limited to 32 exact processes.".into());
+        }
         for index in selected {
             let row = &self.snapshot.processes[index];
             if let Some(action) = action {
                 self.actions.insert(
                     row.identity.pid,
                     ApprovedAction {
+                        reopen: None,
                         target: row.identity.clone(),
                         action,
                     },
@@ -524,7 +722,7 @@ impl State {
         }
         self.game = Some(row.identity.clone());
         self.settings.game_path = row.identity.path.clone();
-        self.actions.remove(&row.identity.pid);
+        self.actions.clear();
         self.text(GAME, &row.identity.path);
         self.repopulate();
         self.plan_preview();
@@ -700,8 +898,7 @@ impl State {
     fn report(&self) -> AppResult<()> {
         let db = runner::database()?;
         if let Some(session) = db.latest()? {
-            let report = serde_json::to_string_pretty(&session).map_err(|e| e.to_string())?;
-            self.text(DETAILS, &report.replace('\n', "\r\n"));
+            self.text(DETAILS, &crate::report::render(&session));
         } else {
             self.text(DETAILS, "No game session has been recorded yet.");
         }
@@ -719,6 +916,11 @@ impl State {
             return Ok(());
         }
         match id {
+            GROUP => self.select_app_group(),
+            PROFILE_SAVE => self.save_profile(),
+            PROFILE_LOAD => self.load_profile(),
+            PROFILE_DELETE => self.delete_profile(),
+            REOPEN => self.toggle_reopen(),
             REFRESH => { self.refresh(); Ok(()) }, BROWSE => self.browse(), USE_GAME => self.use_game(),
             LOWER => self.mark(Some(ActionKind::LowerPriorities)), CLOSE => self.mark(Some(ActionKind::Close)), FORCE => self.mark(Some(ActionKind::ForceClose)), KEEP => self.mark(None), PROTECT => self.protect(),
             START => self.start(), RESTORE => self.restore(), REPORT => self.report(),
@@ -735,6 +937,9 @@ impl State {
             self.sampling = false;
             match result {
                 Ok(snapshot) => {
+                    unsafe {
+                        SendMessageW(self.h(LIST), LB_SETSEL, 0, -1);
+                    }
                     self.snapshot = snapshot;
                     self.actions.retain(|_, action| {
                         self.snapshot
@@ -765,10 +970,11 @@ impl State {
                         format!("{:?}: worker not running. Click Restore now; original values remain in the recovery journal.", s.stage)
                     } else {
                         format!(
-                            "Session {:?} | {} settings recorded | {} close attempts. {}",
+                            "Session {:?} | {} settings | {} close attempts | {} reopening outcomes. {}",
                             s.stage,
                             s.changes.len(),
                             s.closed.len(),
+                            s.reopened.len(),
                             if s.stage == Stage::RecoveryNeeded {
                                 "Review conflicts before continuing."
                             } else {

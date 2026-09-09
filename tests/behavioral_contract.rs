@@ -37,6 +37,7 @@ fn session() -> Session {
                 ..identity(99)
             }),
             actions: vec![ApprovedAction {
+                reopen: None,
                 target: identity(10),
                 action: ActionKind::LowerPriorities,
             }],
@@ -157,6 +158,7 @@ fn gpu_opt_in_is_independent_of_normal_approval() {
 fn protected_later_target_prevents_earlier_mutation() {
     let (mut s, mut b, mut j) = setup();
     s.plan.actions.push(ApprovedAction {
+        reopen: None,
         target: identity(20),
         action: ActionKind::Close,
     });
@@ -242,6 +244,7 @@ fn oversized_and_unknown_requests_are_rejected() {
     let mut s = session();
     s.plan.actions = (10..43)
         .map(|p| ApprovedAction {
+            reopen: None,
             target: identity(p),
             action: ActionKind::Close,
         })

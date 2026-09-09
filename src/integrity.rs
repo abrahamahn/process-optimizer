@@ -24,7 +24,11 @@ pub fn uncertain_close(state: &CloseState) -> bool {
 }
 
 pub fn validate_record(s: &Session) -> AppResult<()> {
-    if s.schema != SCHEMA_VERSION {
+    if s.schema != SCHEMA_VERSION
+        && !(s.schema == 2
+            && s.plan.actions.iter().all(|a| a.reopen.is_none())
+            && s.reopened.is_empty())
+    {
         return Err("Unsupported recovery schema; preserve it for the matching build.".into());
     }
     if s.id.is_empty()
@@ -37,10 +41,16 @@ pub fn validate_record(s: &Session) -> AppResult<()> {
         return Err("Invalid recovery record ID.".into());
     }
     policy::validate(&s.plan)?;
-    if s.changes.len() > 128 || s.closed.len() > 32 || s.events.len() > 2048 {
+    if s.changes.len() > 128
+        || s.closed.len() > 32
+        || s.events.len() > 2048
+        || s.reopened.len() > 32
+    {
         return Err("Recovery record exceeds its bounded action/event count.".into());
     }
-    if s.stage == Stage::Pending && (!s.changes.is_empty() || !s.closed.is_empty()) {
+    if s.stage == Stage::Pending
+        && (!s.changes.is_empty() || !s.closed.is_empty() || !s.reopened.is_empty())
+    {
         return Err("A pending session cannot contain previously attempted mutations.".into());
     }
     if let Some(game) = &s.game {
@@ -100,9 +110,58 @@ pub fn validate_record(s: &Session) -> AppResult<()> {
             return Err("Invalid or duplicate close record.".into());
         }
     }
+    let mut reopened = HashSet::new();
+    for item in &s.reopened {
+        if !s
+            .plan
+            .actions
+            .iter()
+            .any(|a| a.reopen.is_some() && policy::same_process(&a.target, &item.target))
+            || !reopened.insert(policy::normalized_path(&item.target.path))
+        {
+            return Err("Reopen record is duplicated or outside the original approval.".into());
+        }
+        if matches!(
+            item.state,
+            ReopenState::IntentRecorded | ReopenState::Started | ReopenState::Indeterminate
+        ) && !s.closed.iter().any(|c| {
+            policy::same_process(&c.target, &item.target) && c.state == CloseState::ClosedGracefully
+        }) {
+            return Err("Reopen intent requires this session's verified graceful closure.".into());
+        }
+        if (item.state == ReopenState::Started) != item.child.is_some() {
+            return Err("A started reopen requires a verified new process identity.".into());
+        }
+        if let Some(child) = &item.child {
+            if !policy::complete_identity(child)
+                || policy::same_process(child, &item.target)
+                || crate::applications::app_key(child)?
+                    != crate::applications::app_key(&item.target)?
+                || !crate::applications::same_user_session(child, &item.target)
+            {
+                return Err("Invalid replacement identity in reopen record.".into());
+            }
+        }
+    }
+    if s.stage == Stage::Restored
+        && s.plan.actions.iter().any(|a| {
+            a.reopen.is_some()
+                && s.closed.iter().any(|c| {
+                    policy::same_process(&c.target, &a.target)
+                        && c.state == CloseState::ClosedGracefully
+                })
+                && !s
+                    .reopened
+                    .iter()
+                    .any(|r| policy::same_process(&r.target, &a.target))
+        })
+    {
+        return Err("A completed session is missing an approved reopening outcome.".into());
+    }
     if s.stage == Stage::Restored
         && (!s.changes.iter().all(|c| c.state.resolved())
-            || s.closed.iter().any(|c| uncertain_close(&c.state)))
+            || s.closed.iter().any(|c| uncertain_close(&c.state))
+            || s.reopened.iter().any(|r| !r.state.resolved()))
     {
         return Err("Unresolved actions cannot be labeled as fully restored.".into());
     }
@@ -121,7 +180,10 @@ pub fn validate_update(previous: &Session, next: &Session) -> AppResult<()> {
     {
         return Err("The approved plan cannot be rewritten during an existing session.".into());
     }
-    if next.changes.len() < previous.changes.len() || next.closed.len() < previous.closed.len() {
+    if next.changes.len() < previous.changes.len()
+        || next.closed.len() < previous.closed.len()
+        || next.reopened.len() < previous.reopened.len()
+    {
         return Err("Recovery evidence cannot be removed by a session update.".into());
     }
     for (old, new) in previous.changes.iter().zip(&next.changes) {
@@ -132,6 +194,20 @@ pub fn validate_update(previous: &Session, next: &Session) -> AppResult<()> {
     for (old, new) in previous.closed.iter().zip(&next.closed) {
         if old.target != new.target || old.force_allowed != new.force_allowed {
             return Err("A recorded close target or force authorization was rewritten.".into());
+        }
+    }
+    for (old, new) in previous.reopened.iter().zip(&next.reopened) {
+        if old.target != new.target
+            || (old.state.resolved()
+                && serde_json::to_value(old).map_err(|e| e.to_string())?
+                    != serde_json::to_value(new).map_err(|e| e.to_string())?)
+            || (old.state == ReopenState::Indeterminate
+                && new.state != ReopenState::Indeterminate
+                && new.state != ReopenState::UserKept)
+        {
+            return Err(
+                "Reopen evidence cannot be rewritten or retried after an uncertain launch.".into(),
+            );
         }
     }
     if previous.stage.finished()

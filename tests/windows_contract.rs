@@ -54,7 +54,11 @@ fn session(target: Identity, action: ActionKind) -> Session {
                 path: r"C:\TestOnly\NotAnActualGame.exe".into(),
                 ..target.clone()
             }),
-            actions: vec![ApprovedAction { target, action }],
+            actions: vec![ApprovedAction {
+                target,
+                action,
+                reopen: None,
+            }],
             protected_paths: vec![],
             options: Options {
                 gpu_priority: false,

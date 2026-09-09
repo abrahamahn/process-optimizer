@@ -185,15 +185,20 @@ fn logon_id(process: HANDLE) -> NativeResult<u64> {
 }
 
 pub fn image_file_id(path: &str) -> NativeResult<String> {
-    use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
-    use windows_sys::Win32::Storage::FileSystem::{
-        FileIdInfo, GetFileInformationByHandleEx, FILE_ID_INFO,
-    };
+    use std::os::windows::fs::OpenOptionsExt;
     let file = std::fs::OpenOptions::new()
         .access_mode(0x80)
         .share_mode(7)
         .open(path)
         .map_err(|e| Fault::new(FaultKind::Denied, format!("Image identity: {e}")))?;
+    image_file_id_from_file(&file)
+}
+
+pub fn image_file_id_from_file(file: &std::fs::File) -> NativeResult<String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileIdInfo, GetFileInformationByHandleEx, FILE_ID_INFO,
+    };
     let mut info: FILE_ID_INFO = unsafe { zeroed() };
     if unsafe {
         GetFileInformationByHandleEx(
@@ -445,6 +450,13 @@ impl WindowsBackend {
 }
 
 impl Backend for WindowsBackend {
+    fn validate_reopen(&mut self, id: &Identity, approval: &ReopenApproval) -> NativeResult<()> {
+        self.authorize(id)?;
+        super::reopen::validate_approval(id, approval)
+    }
+    fn reopen(&mut self, id: &Identity, approval: &ReopenApproval) -> NativeResult<ReopenRecord> {
+        super::reopen::reopen(id, approval)
+    }
     fn authorize(&mut self, id: &Identity) -> NativeResult<()> {
         if self.cancelled() {
             return Err(Fault::new(

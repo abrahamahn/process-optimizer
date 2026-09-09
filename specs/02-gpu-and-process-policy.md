@@ -102,3 +102,11 @@ Reviewed for contract semantics; real-host tests remain required.
 - [S13 Stopping a service](https://learn.microsoft.com/en-us/windows/win32/services/stopping-a-service)
 - [S14 SuspendThread](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-suspendthread)
 - [S15 Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects) and [unsupported job I/O rate control](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-setioratecontrolinformationjobobject)
+
+## Native GUI reopening adapter
+
+The initial adapter requires an ordinary local Windows-GUI PE image and an observed top-level window at opt-in/preflight. It excludes shells/interpreters/job hosts and reparse-path ambiguity. Before launch it checks the same owner/logon/session, current protection, original image file ID/size/write time and possible existing instances. A no-write/no-delete-sharing executable handle stays open through process creation. Launch uses the absolute reviewed path with no arguments and normal priority/privileges; old process policies are not transferred. This is not a content signature or perfect filesystem-wide race isolation.
+
+Both WTS extended session state (Active and Unlocked) and the input desktop (Default) must be readable immediately before launch. Missing/locked/disconnected evidence produces Deferred; the adapter never unlocks the desktop or changes privileges. Windows 7/Server 2008 R2 reversed lock-flag behavior is outside the supported Windows 11 product target. OS checks are snapshots, not a promise that another actor cannot lock the desktop immediately afterward.
+
+Primary API references: [WTSINFOEX_LEVEL1_W](https://learn.microsoft.com/en-us/windows/win32/api/wtsapi32/ns-wtsapi32-wtsinfoex_level1_w), [OpenInputDesktop](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-openinputdesktop), [CreateFile sharing](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew), [CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw).

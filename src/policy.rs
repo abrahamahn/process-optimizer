@@ -87,6 +87,7 @@ pub fn validate(plan: &Plan) -> AppResult<()> {
         return Err("Experimental GPU scheduling needs separate session approval.".into());
     }
     let mut pids = HashSet::new();
+    let mut reopen_apps = HashSet::new();
     for item in &plan.actions {
         if !complete_identity(&item.target) {
             return Err("A selected process has no trustworthy identity.".into());
@@ -95,6 +96,17 @@ pub fn validate(plan: &Plan) -> AppResult<()> {
             return Err("The game PID cannot be an optimization target.".into());
         }
         let image = normalized_path(&item.target.path);
+        if let Some(approval) = &item.reopen {
+            if item.action != ActionKind::Close
+                || approval.file_size == 0
+                || approval.modified == 0
+                || item.target.provenance.as_ref().map(|p| &p.image_file_id)
+                    != Some(&approval.image_file_id)
+                || !reopen_apps.insert(image.clone())
+            {
+                return Err("Reopening requires one separately approved, unchanged GUI executable per app and a graceful-close action.".into());
+            }
+        }
         if reserved_name(image.rsplit('\\').next().unwrap_or("")) {
             return Err(
                 "The plan contains protected game, device or system infrastructure.".into(),
@@ -272,6 +284,7 @@ mod tests {
     fn force_consent_is_separate() {
         let mut p = plan();
         p.actions.push(ApprovedAction {
+            reopen: None,
             target: id(20),
             action: ActionKind::ForceClose,
         });
@@ -298,6 +311,7 @@ mod tests {
         let mut p = plan();
         p.protected_paths.push(id(20).path);
         p.actions.push(ApprovedAction {
+            reopen: None,
             target: id(20),
             action: ActionKind::Close,
         });
@@ -307,6 +321,7 @@ mod tests {
     fn duplicate_pid_rejected() {
         let mut p = plan();
         let a = ApprovedAction {
+            reopen: None,
             target: id(20),
             action: ActionKind::Close,
         };
@@ -319,6 +334,7 @@ mod tests {
         let mut i = id(20);
         i.path = p.game_path.clone();
         p.actions.push(ApprovedAction {
+            reopen: None,
             target: i,
             action: ActionKind::Close,
         });

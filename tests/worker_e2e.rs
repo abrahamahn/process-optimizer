@@ -119,6 +119,7 @@ impl Harness {
                 game_path: game_id.path.clone(),
                 game: Some(game_id),
                 actions: vec![ApprovedAction {
+                    reopen: None,
                     target,
                     action: ActionKind::LowerPriorities,
                 }],
@@ -139,7 +140,12 @@ impl Harness {
         loop {
             if let Some(s) = self.db().latest().unwrap() {
                 if s.stage == expected {
-                    if expected == Stage::Active {
+                    if expected == Stage::Active
+                        && s.plan
+                            .actions
+                            .iter()
+                            .any(|a| a.action == ActionKind::LowerPriorities)
+                    {
                         assert_eq!(
                             s.changes.len(),
                             1,
@@ -295,4 +301,73 @@ fn restart_does_not_inherit_original_process_settings() {
     let result = h.stage(Stage::Restored, &mut worker);
     assert_eq!(priority(&id), before);
     assert_eq!(result.changes[0].state, ChangeState::ProcessGone);
+}
+
+#[test]
+#[ignore = "requires an isolated, explicitly opted-in normal-user CI account"]
+fn gui_reopen_is_identity_checked_and_respects_the_interactive_desktop() {
+    use process_optimizer::windows::reopen;
+    let h = Harness::new();
+    let mut game = h.spawn(true);
+    let exe = h.root.join("reopen-fixture.exe");
+    std::fs::copy(&h.fixture, &exe).unwrap();
+    let mut gui = OwnedChild(Command::new(&exe).spawn().unwrap());
+    let target = process::identity(gui.0.id()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let approval = loop {
+        if let Ok(value) = reopen::approval(&target) {
+            break value;
+        }
+        assert!(Instant::now() < deadline, "test GUI never became eligible");
+        thread::sleep(Duration::from_millis(50));
+    };
+    let mut session = h.plan(&game, &gui);
+    session.plan.actions[0].action = ActionKind::Close;
+    session.plan.actions[0].reopen = Some(approval.clone());
+    session.plan.options = Options::default();
+    let mut changed = approval;
+    changed.modified += 1;
+    assert!(reopen::validate_approval(&target, &changed).is_err());
+    h.db().create(&session).unwrap();
+    let mut worker = h.worker(Some(&session.id));
+    let active = h.stage(Stage::Active, &mut worker);
+    assert_eq!(active.closed[0].state, CloseState::ClosedGracefully);
+    assert!(gui.done());
+    game.exit();
+    let restored = h.stage(Stage::Restored, &mut worker);
+    assert_eq!(restored.reopened.len(), 1);
+    let result = &restored.reopened[0];
+    match result.state {
+        ReopenState::Started => {
+            let child = result.child.as_ref().unwrap();
+            assert_eq!(
+                child.path.to_lowercase(),
+                exe.to_string_lossy().to_lowercase()
+            );
+            assert!(!process_optimizer::policy::same_process(child, &target));
+            // Clean up only the exact disposable GUI created by this test's approved launch.
+            WindowsBackend::new(None, vec![], None)
+                .unwrap()
+                .close(child, true, 1000)
+                .unwrap();
+            eprintln!("Native GUI reopen: successful creation and identity verification.");
+        }
+        ReopenState::Deferred => {
+            assert!(result.child.is_none());
+            eprintln!("Native GUI reopen: correctly deferred on noninteractive hosted desktop; no successful launch claimed.");
+        }
+        _ => panic!(
+            "unexpected reopening outcome: {:?}: {}",
+            result.state, result.detail
+        ),
+    }
+}
+
+#[test]
+#[ignore = "requires an isolated, explicitly opted-in normal-user CI account"]
+fn existing_windowless_fixture_cannot_receive_generic_reopen_approval() {
+    let h = Harness::new();
+    let background = h.spawn(false);
+    let target = process::identity(background.0.id()).unwrap();
+    assert!(process_optimizer::windows::reopen::approval(&target).is_err());
 }
