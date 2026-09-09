@@ -105,13 +105,21 @@ impl Harness {
 
     fn plan(&self, game: &OwnedChild, background: &OwnedChild) -> Session {
         let game_id = process::identity(game.0.id()).unwrap();
+        let target = process::identity(background.0.id()).unwrap();
+        // A fixture may inherit a low priority from the CI launcher. Establish
+        // and verify a known test-owned baseline; no user process is involved.
+        WindowsBackend::new(None, vec![], None)
+            .unwrap()
+            .write(&target, &Value::CpuPriority(0x20))
+            .unwrap();
+        assert_eq!(priority(&target), Value::CpuPriority(0x20));
         Session::new(
             process_optimizer::windows::runner::fresh_id(),
             Plan {
                 game_path: game_id.path.clone(),
                 game: Some(game_id),
                 actions: vec![ApprovedAction {
-                    target: process::identity(background.0.id()).unwrap(),
+                    target,
                     action: ActionKind::LowerPriorities,
                 }],
                 protected_paths: vec![],
@@ -131,6 +139,14 @@ impl Harness {
         loop {
             if let Some(s) = self.db().latest().unwrap() {
                 if s.stage == expected {
+                    if expected == Stage::Active {
+                        assert_eq!(
+                            s.changes.len(),
+                            1,
+                            "Expected a real fixture mutation: {:?}",
+                            s.events
+                        );
+                    }
                     return s;
                 }
                 assert!(
