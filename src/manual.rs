@@ -1,4 +1,4 @@
-//! User-toggled mode and explicit recurring background-app permissions.
+//! User-toggled mode plus explicit temporary and persistent cleanup permissions.
 //! No game detection, wildcard rules, future-process enforcement, force or reopening.
 use crate::{
     applications::{self, AppKey},
@@ -9,11 +9,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 pub const APPROVAL_SECONDS: u64 = 30 * 24 * 60 * 60;
+pub const CONFIG_SCHEMA: u32 = 2;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RuleAction {
     Close,
     ReduceLoad,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rule {
@@ -29,24 +32,50 @@ impl Rule {
         now >= self.granted_unix && now < self.expires_unix
     }
 }
+
+/// Persistent cleanup is deliberately narrower than "debloat Windows".
+/// Version 0.4 only backs up and disables a matching current-user Run value.
+/// The exact original value is retained so the user can restore it later.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StartupValueKind {
+    String,
+    ExpandString,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StartupBackup {
+    pub app: AppKey,
+    pub owner_sid: String,
+    pub value_name: String,
+    pub command: String,
+    pub kind: StartupValueKind,
+    pub disabled_unix: u64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub schema: u32,
     pub rules: Vec<Rule>,
+    #[serde(default)]
+    pub startup_disabled: Vec<StartupBackup>,
 }
 impl Default for Config {
     fn default() -> Self {
         Self {
-            schema: 1,
+            schema: CONFIG_SCHEMA,
             rules: vec![],
+            startup_disabled: vec![],
         }
     }
 }
 
 pub fn validate(c: &Config) -> AppResult<()> {
-    if c.schema != 1
+    if !matches!(c.schema, 1 | CONFIG_SCHEMA)
         || c.rules.len() > 32
+        || c.startup_disabled.len() > 32
+        || (c.schema == 1 && !c.startup_disabled.is_empty())
         || serde_json::to_vec(c).map_err(|e| e.to_string())?.len() > 256 * 1024
     {
         return Err(
@@ -84,6 +113,38 @@ pub fn validate(c: &Config) -> AppResult<()> {
             );
         }
     }
+
+    let mut startup_values = HashSet::new();
+    for backup in &c.startup_disabled {
+        let shape = Identity {
+            pid: 99,
+            created: 1,
+            session_id: 1,
+            path: backup.app.path.clone(),
+            provenance: Some(Provenance {
+                owner_sid: backup.owner_sid.clone(),
+                logon_id: 1,
+                image_file_id: backup.app.image_file_id.clone(),
+            }),
+        };
+        if !policy::complete_identity(&shape)
+            || backup.owner_sid.len() > 256
+            || backup.app.image_file_id.len() > 256
+            || backup.app.path != policy::normalized_path(&backup.app.path)
+            || backup.value_name.is_empty()
+            || backup.value_name.len() > 512
+            || backup.command.is_empty()
+            || backup.command.len() > 32 * 1024
+            || backup.command.contains('\0')
+            || backup.disabled_unix == 0
+            || !startup_values.insert(backup.value_name.to_lowercase())
+            || policy::reserved_name(backup.app.path.rsplit('\\').next().unwrap_or(""))
+        {
+            return Err(
+                "Invalid persistent-cleanup backup. Existing startup data was preserved.".into(),
+            );
+        }
+    }
     Ok(())
 }
 
@@ -107,10 +168,39 @@ pub fn approve(
         expires_unix: now.checked_add(APPROVAL_SECONDS).ok_or("Invalid time")?,
     };
     validate(&Config {
-        schema: 1,
+        schema: CONFIG_SCHEMA,
         rules: vec![rule.clone()],
+        startup_disabled: vec![],
     })?;
     Ok(rule)
+}
+
+pub fn startup_backup(
+    id: &Identity,
+    value_name: String,
+    command: String,
+    kind: StartupValueKind,
+    now: u64,
+) -> AppResult<StartupBackup> {
+    let backup = StartupBackup {
+        app: applications::app_key(id)?,
+        owner_sid: id
+            .provenance
+            .as_ref()
+            .ok_or("Unknown owner")?
+            .owner_sid
+            .clone(),
+        value_name,
+        command,
+        kind,
+        disabled_unix: now,
+    };
+    validate(&Config {
+        schema: CONFIG_SCHEMA,
+        rules: vec![],
+        startup_disabled: vec![backup.clone()],
+    })?;
+    Ok(backup)
 }
 
 pub fn matching_rule<'a>(
