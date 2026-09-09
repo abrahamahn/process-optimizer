@@ -1,55 +1,69 @@
 # Process Optimizer
 
-A native Windows game-session application focused on competing **GPU work**, consented background-process closure, and recoverable scheduling changes. Rust + Win32; no browser runtime, overclocking, permanent debloat or cloud service.
+A **native Windows GPU-first game-session optimizer**: inspect competing GPU work, close explicitly approved background processes, temporarily lower supported scheduling policies, and restore the settings it changed.
 
-**Development alpha. Code is implemented; Windows build/test results and remaining hardware validation are tracked in GitHub Actions and the specifications. No FPS improvement or universal GPU restriction is claimed.**
+Rust + Win32. No web runtime, overclocking, permanent debloat, kernel driver, game injection, cloud service or resident LLM.
 
-## What this version does
+**Development alpha, not a proven FPS booster.** Native code and deterministic/Windows fixture tests are implemented. Actual gaming GPU compatibility, game/anti-cheat behavior and performance improvements remain unmeasured. See [validation evidence](specs/04-validation-and-delivery.md#recorded-evidence).
 
-- Samples Windows GPU Engine / GPU Process Memory counters, retaining adapter LUID and engine detail. Missing data is shown as unavailable, never invented as zero.
-- Lets you select exact background process lifetimes. Keep is the default. Graceful close and separately approved force termination are distinct actions; no recursive or name-based kill sweep.
-- Attaches to an actual running game or attempts to start its selected executable. A separate worker restores recorded settings after game exit or a Restore request, even if the UI window is closed.
-- Offers individually selected GPU scheduling priority, CPU priority, EcoQoS and memory-priority controls where native getters/setters work. Read/apply/verify/restore is journaled; GPU priority is not a usage cap, memory reservation or GPU ban.
-- Writes a local SQLite write-ahead recovery journal before every mutation. Reused PIDs are not touched; visibly changed values are retained as conflicts rather than overwritten.
-- Protects Windows components, critical/other-user processes, known game-support and voice infrastructure, the selected game's family, and your protected applications. Unknown dependencies still require user review.
+## Current implementation
 
-## Use
+| Capability | What actually exists |
+| --- | --- |
+| Native application | Win32 controls, keyboard navigation, DPI-aware layout, process/action preview, protected-app settings and Restore/report controls |
+| GPU inspection | PDH GPU Engine and GPU Process Memory collection; adapter/engine detail; unknown/invalid samples are not fabricated as zero |
+| Approved closure | Exact selected process lifetimes; bounded normal-close requests; **separate direct force confirmation**, never timeout-to-force escalation |
+| Game session | Attach to an explicitly selected already-running game; independent controller process; restore after selected game exit or user request |
+| GPU scheduling | Experimental, opt-in D3DKMT process scheduling class read/apply/verify/restore; denied/unsupported operations are skipped, not bypassed |
+| Supporting policies | Individually selected CPU priority, queryable EcoQoS and memory priority; never raise an already lower background priority |
+| Recovery | Durable SQLite intent before mutation; exact original values; PID/creation time/user/logon/file identity; external-change conflicts are preserved |
+| Ownership and protection | One controller per user store; one unfinished database session; private recovery directory; system/game/launcher/security/device/accessibility and user protections |
 
-Build on Windows with the Rust MSVC toolchain and Visual Studio C++ Build Tools:
+There is no automatic whole-process-tree kill, future-process kill rule or claimed GPU usage cap. Selected-process closure is not necessarily whole-application closure: helpers may remain. Multi-adapter memory values are not added into an unlabeled reclaimable-VRAM number.
+
+## Run a portable build
+
+A successful **Windows** GitHub Actions run produces `process-optimizer-windows-x64.zip` and a SHA-256 checksum under its **Artifacts**. The ZIP contains the EXE, this guide, source commit and executable checksum. Extract the ZIP before opening the EXE. The binary is not code-signed; do not disable Windows security.
+
+**Run normally, not as administrator. Save open work first.** Starting the application only observes; no background processes are preselected for closure and experimental GPU scheduling is off by default.
+
+1. Start the game through Steam or its normal launcher. Open Process Optimizer and choose **Refresh GPU / processes**.
+2. Select the actual game process and choose **Use selected as game**. A launcher or a browsed executable path is not a substitute for the running game lifetime.
+3. Select optional background processes with Ctrl/Shift. Assign **Close gracefully**, **Lower priorities**, or the separately confirmed **Force terminate** action. Use **Keep** or the protection control for anything needed by the game, voice, accessibility or device operation.
+4. Inspect the exact plan and choose **START GAME SESSION**. Lower-priority actions require an explicitly selected policy. GPU scheduling prompts for additional experimental consent; force termination has its own target-specific confirmation.
+5. **Restore now** stops further optimization and restores eligible settings. If the controller died, it starts journal recovery. **Show last report** distinguishes restoration, exited targets, pending close requests and conflicts.
+
+Closing the UI does not abandon a running session: the independent controller remains. Alt-Tab/minimization is not game exit. If the controller itself crashes, immediate unattended recovery is not guaranteed; reopen the UI and choose **Restore now**. **Keep current / clear warning** explicitly acknowledges unresolved items; it is not a successful restoration.
+
+Normal close can display an application's save prompt. The optimizer never answers it. If exit remains unconfirmed, the report keeps that uncertainty; it does not silently force termination or claim the request was undone.
+
+## Recovery limits
+
+A snapshot records our settings and action intent, **not machine/process/GPU memory**. A settings restore does not recover unsaved documents, closed workloads or old RAM/VRAM residency.
+
+**Automatic app reopening is not implemented in this alpha.** Neither are general cooperative GPU-pause adapters, service/CPU-Set policies, automatic Steam launcher handoff, automatic per-game profiles, a recovery supervisor or an installer. Unavailable launch is visibly disabled; no unsupported shortcut is used in its place.
+
+State stays under `%LOCALAPPDATA%\ProcessOptimizer`. Do not delete it during an active/unresolved session. New session records use schema 2 for strengthened identity and consent. An older/corrupt/future record fails closed and is preserved; never remove it merely to suppress a recovery warning. Protection is conservative but cannot infer every third-party dependency: the user must review which optional targets are genuinely nonessential.
+
+## Build from source
+
+Windows x64, the Rust MSVC toolchain and Visual Studio C++ Build Tools are required. `rust-toolchain.toml` pins Rust; `Cargo.lock` pins resolved dependencies.
 
 ```powershell
 .\scripts\build.ps1
 .\target\release\process-optimizer.exe
 ```
 
-A successful **Windows** GitHub Actions run also produces a portable x64 ZIP and SHA-256 checksum under that run's **Artifacts**. The executable is not code-signed; the artifact's source commit is included in the ZIP. Do not disable Windows security to run it.
-
-Run normally, **not as administrator**. Start the game through Steam or its normal launcher first; refresh the process list, select the actual game process, and choose **Use selected as game**. Select optional background processes with Ctrl/Shift and assign **Lower priorities**, **Close gracefully**, or **Force-close allowed**. Inspect the plan and choose **START GAME SESSION**. Force termination has an additional confirmation. Save documents first.
-
-**Restore now** asks the running worker to stop and restore. If the worker died, it starts recovery from the durable journal. **Show last report** explains outcomes. **Keep current / clear warning** explicitly acknowledges unresolved values; it does not pretend they were restored.
-
-Closing an app cannot be undone. This version does **not** capture application memory or automatically reopen applications. A settings restore does not bring back unsaved documents, tabs, RAM/VRAM residency or closed workloads.
-
-Settings and recovery records stay under `%LOCALAPPDATA%\ProcessOptimizer`. Do not delete them during an active/unresolved session. The current build has no installer, automatic startup service or kernel driver.
-
-## Validation and limits
+The script runs formatting, tests, static checks and a release build. It does not start an optimizer session. Native tests change only their own disposable fixtures. The force test is ignored by default and can be requested separately:
 
 ```powershell
-cargo test --lib
-cargo test --all-targets
-cargo clippy --all-targets
-cargo build --release --bin process-optimizer
+cargo test --locked --test windows_contract -- --ignored --nocapture
 ```
 
-Native mutation tests use their own disposable fixture processes, never arbitrary user apps. Hosted Windows tests cannot establish gaming GPU/HAGS/driver compatibility, actual FPS gains, input latency, controller/voice compatibility or sustained overhead on a physical machine.
+Cross-platform logic tests use `cargo test --locked --all-targets`; Windows-specific tests are conditionally compiled. A Linux test pass does not establish Windows behavior. Hosted Windows tests are not physical-GPU gaming benchmarks.
 
-Some counters or scheduling APIs may be unavailable. GPU allocations are not a promise of reclaimable physical VRAM. Required compositor/display work remains active. Advanced app-group resolution, supported cooperative GPU pause adapters, optional app reopening, automatic per-game profiles, CPU Sets, service controls and physical-GPU benchmarks are not complete in this alpha.
+## Scope and evidence
 
-## Specification owners
+GPU priority means scheduling preference, **not zero-GPU enforcement, reservation, memory eviction or guaranteed FPS gain**. Network, Bluetooth, audio/input, display, security and game infrastructure are protected. No HAGS/MPO/registry folklore, game quality changes, device resets or security disabling are performed.
 
-| Document | Authority |
-| --- | --- |
-| [Product](specs/01-product.md) | Scope, priorities, consent, native UI, non-goals |
-| [GPU and process policy](specs/02-gpu-and-process-policy.md) | GPU attribution, close/pause policies, low-level API boundaries |
-| [Session recovery and architecture](specs/03-session-recovery-and-architecture.md) | Journal, identity, failures, recovery, native components |
-| [Validation and delivery](specs/04-validation-and-delivery.md) | Acceptance scenarios, measured evidence, delivery gates |
+[Product behavior](specs/01-product.md) defines the user contract. [GPU/process behavior](specs/02-gpu-and-process-policy.md) defines mechanisms. [Session/recovery](specs/03-session-recovery-and-architecture.md) defines durability and failures. [Validation](specs/04-validation-and-delivery.md) separates executed tests from remaining release gates.
