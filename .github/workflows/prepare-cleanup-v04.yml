@@ -1,0 +1,89 @@
+name: Validate v0.4 cleanup UI
+on:
+  push:
+    branches: [codex/cleanup-ui-v04]
+    paths:
+      - src/manual.rs
+      - src/windows/startup.rs
+      - src/windows/mod.rs
+      - Cargo.toml
+      - scripts/prepare_cleanup_v04.py
+      - .github/workflows/prepare-cleanup-v04.yml
+permissions:
+  contents: write
+concurrency:
+  group: cleanup-v04-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    if: github.repository == 'abrahamahn/process-optimizer' && github.ref == 'refs/heads/codex/cleanup-ui-v04'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Apply reviewed exact-match source changes
+        run: python scripts/prepare_cleanup_v04.py
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy
+      - name: Refresh lockfile and format
+        shell: pwsh
+        run: |
+          cargo generate-lockfile
+          if ($LASTEXITCODE -ne 0) { throw 'Lockfile generation failed' }
+          cargo fmt --all
+          if ($LASTEXITCODE -ne 0) { throw 'Formatting failed' }
+      - name: Native and deterministic tests
+        run: cargo test --locked --all-targets -- --nocapture
+      - name: Explicit fixture-only force path
+        run: cargo test --locked --test windows_contract -- --ignored --nocapture
+      - name: Standard-user lifecycle fixtures
+        shell: pwsh
+        run: ./scripts/ci-normal-user.ps1
+      - name: Warning-free static checks
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Release build
+        run: cargo build --locked --release --bin process-optimizer
+      - name: Portable dependency check
+        shell: pwsh
+        run: ./scripts/check-portable.ps1
+      - name: Simple and Advanced UI smoke plus read-only GPU probe
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force review | Out-Null
+          $exe = (Resolve-Path target/release/process-optimizer.exe).Path
+          foreach ($mode in @('--ui-smoke', '--advanced-smoke')) {
+            $p = Start-Process -FilePath $exe -ArgumentList $mode -PassThru
+            if (-not $p.WaitForExit(30000)) { $p.Kill(); throw "Our $mode timed out" }
+            if ($p.ExitCode -ne 0) { throw "Native $mode failed" }
+          }
+          $probe = Join-Path $pwd 'review/ci.probe.json'
+          $p = Start-Process -FilePath $exe -ArgumentList @('--probe', $probe) -PassThru
+          if (-not $p.WaitForExit(30000)) { $p.Kill(); throw 'Read-only GPU probe timed out' }
+          if ($p.ExitCode -ne 0) { throw 'Read-only GPU probe failed' }
+          Remove-Item $probe
+      - name: Commit verified source to validation branch
+        shell: pwsh
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.lock README.md specs src tests
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 1) {
+            git commit -m 'feat: add copyable diagnostics and reversible permanent startup cleanup'
+            if ($LASTEXITCODE -ne 0) { throw 'Verified-source commit failed' }
+            git push origin HEAD:refs/heads/codex/cleanup-ui-v04
+            if ($LASTEXITCODE -ne 0) { throw 'Branch advanced; refusing overwrite' }
+          } elseif ($LASTEXITCODE -ne 0) { throw 'Cannot inspect staged changes' }
+          git rev-parse HEAD
+      - name: Archive reviewed source
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force review | Out-Null
+          Compress-Archive -Path src,tests,specs,Cargo.toml,Cargo.lock,README.md,AGENTS.md,rust-toolchain.toml -DestinationPath review/v04-source.zip
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: cleanup-v04-review
+          path: review/v04-source.zip
+          retention-days: 7
