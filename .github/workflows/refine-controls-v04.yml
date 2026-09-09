@@ -13,6 +13,37 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Apply reviewed control refinement
         run: python scripts/refine_controls_v04.py
+      - name: Use local Win32 owner-draw ABI declarations
+        shell: pwsh
+        run: |
+          $py = @'
+          from pathlib import Path
+          p = Path('src/windows/simple_ui.rs')
+          text = p.read_text(encoding='utf-8')
+          marker = 'const ES_READONLY_STYLE: u32 = 0x0800;\n'
+          abi = '''const ES_READONLY_STYLE: u32 = 0x0800;\n#[repr(C)]\nstruct AppDrawItem {\n    _ctl_type: u32,\n    ctl_id: u32,\n    item_id: u32,\n    _item_action: u32,\n    item_state: u32,\n    _hwnd_item: HWND,\n    hdc: HDC,\n    rc_item: RECT,\n    _item_data: usize,\n}\n'''
+          if marker not in text:
+              raise RuntimeError('owner-draw ABI insertion marker missing')
+          text = text.replace(marker, abi, 1)
+          replacements = {
+              'BST_CHECKED as usize': '1usize',
+              'BST_UNCHECKED as usize': '0usize',
+              'DRAWITEMSTRUCT': 'AppDrawItem',
+              'item.CtlID': 'item.ctl_id',
+              'item.itemID': 'item.item_id',
+              'item.itemState': 'item.item_state',
+              'item.hDC': 'item.hdc',
+              'item.rcItem': 'item.rc_item',
+              'ODS_SELECTED as u32': '0x0001u32',
+              'ODS_FOCUS as u32': '0x0010u32',
+          }
+          for old, new in replacements.items():
+              if old not in text:
+                  raise RuntimeError(f'expected owner-draw token missing: {old}')
+              text = text.replace(old, new)
+          p.write_text(text, encoding='utf-8', newline='\n')
+          '@
+          $py | python -
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy
       - name: Prepare disposable current-user startup fixture parent
