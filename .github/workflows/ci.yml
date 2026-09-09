@@ -31,7 +31,7 @@ jobs:
           if-no-files-found: error
   windows:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Install pinned Rust toolchain
@@ -41,6 +41,9 @@ jobs:
         run: cargo test --locked --all-targets -- --nocapture
       - name: Separately opt in to force termination of our disposable fixture only
         run: cargo test --locked --test windows_contract -- --ignored --nocapture
+      - name: Complete session lifecycle as a disposable standard user
+        shell: pwsh
+        run: ./scripts/ci-normal-user.ps1
       - name: Native static checks
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Build portable application

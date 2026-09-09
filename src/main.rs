@@ -20,10 +20,9 @@ fn main() {
         _ => Err("Unknown option. Open the application without arguments.".into()),
     };
     if let Err(error) = result {
-        if matches!(
-            args.get(1).map(String::as_str),
-            Some("--probe" | "--ui-smoke")
-        ) {
+        // An unattended controller must exit rather than wait on a modal dialog.
+        // The UI reads durable session outcomes and owns interactive messages.
+        if args.len() > 1 {
             eprintln!("{error}");
         } else {
             ui::error(&error);
