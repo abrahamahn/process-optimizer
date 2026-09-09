@@ -6,9 +6,19 @@ Rust + Win32. No web runtime, overclocking, permanent debloat, kernel driver, ga
 
 **Development alpha, not a proven FPS booster.** Native code and deterministic/Windows fixture tests are implemented. Actual gaming GPU compatibility, game/anti-cheat behavior and performance improvements remain unmeasured. See [validation evidence](specs/04-validation-and-delivery.md#recorded-evidence).
 
+## New in 0.4.1 — explicit per-app controls and safety labels
+
+Settings now treats every visible app as an explicit state choice instead of a one-way cleanup action.
+
+- Each row shows both **Current** state and a conservative **Recommended** action. Game Mode choices are **Keep**, **Lower**, or **Close**. Supported Windows startup entries independently show **On** or **Disabled**.
+- Selecting an app immediately updates the controls. A previously lowered or close-approved app can be changed back with **Keep / undo Game Mode rule**. A startup entry disabled by Process Optimizer can be changed back with **Restore Windows startup**.
+- Known protected processes remain visible instead of disappearing from the list. They are placed first and rendered in red as **ESSENTIAL — DO NOT CHANGE**. Lower, Close and Disable startup are disabled for those rows. If an old rule or prior startup cleanup needs to be undone, the safe removal/restore control remains available.
+- Optional apps are labeled **OPTIONAL** and receive guidance such as **KEEP**, **LOWER DURING GAME MODE**, **CLOSE DURING GAME MODE**, or **DISABLE STARTUP**. Recommendations are hints only; they do not grant permission or execute automatically.
+- Game Mode and Windows startup are independent. For example, an app can remain installed and start normally while only being lowered during Game Mode, or its supported startup entry can be disabled while its Game Mode action remains Keep.
+
 ## New in 0.4.0 — two cleanup choices
 
-Settings now separates **Game Mode only** from **Permanent cleanup**.
+Settings separates **Game Mode only** from **Permanent cleanup**.
 
 - **Game Mode only** is temporary: approved apps may be normally closed or have supported CPU/EcoQoS/memory priorities reduced when you press **Turn ON**. **Turn OFF** restores settings changed by the optimizer; it does not resurrect closed apps or unsaved work.
 - **Permanent cleanup** is deliberately narrow and reversible in 0.4.0: it can disable an exact matching **current-user Windows `Run` startup entry** after backing up the original value. It does **not** uninstall applications, disable Windows services/drivers/scheduled tasks, change security features, or force-close a running process. Unsupported startup sources are left untouched.
@@ -38,11 +48,12 @@ The old process grid, per-game recipes and optional reopening remain available u
 | Game session | Default manual mode lasts until Off, without a selected game. Optional Advanced sessions can still follow an exact game lifetime |
 | GPU scheduling | Experimental, opt-in D3DKMT process scheduling class read/apply/verify/restore; denied/unsupported operations are skipped, not bypassed |
 | Supporting policies | CPU priority, queryable EcoQoS and memory priority; never raise an already lower background priority |
+| Per-app Settings control | Visible Current + Recommended state; explicit Keep/Lower/Close and supported startup Disable/Restore; protected rows stay visible and locked |
 | Profiles and app groups | Default saved background-app permissions; optional Advanced per-game recipes and explicit executable grouping |
 | Optional reopening | Advanced only: separately approved GUI executable after confirmed graceful close, with file/desktop checks and durable no-retry launch intent |
 | Permanent cleanup | Reversible exact current-user `Run` startup disable/restore with backup-before-delete and conflict-safe restore; no service/task/driver fallback |
 | Recovery | Durable SQLite intent before mutation; exact original values; PID/creation time/user/logon/file identity; external-change conflicts are preserved |
-| Ownership and protection | One controller per user store; one unfinished database session; private recovery directory; known essential and user-protected apps excluded |
+| Ownership and protection | One controller per user store; one unfinished database session; private recovery directory; known essential and user-protected apps are visible but mutation-locked |
 
 There is no automatic whole-process-tree kill, future-process kill rule or claimed GPU usage cap. Selected-process closure is not necessarily whole-application closure: helpers may remain. Multi-adapter memory values are not added into an unlabeled reclaimable-VRAM number.
 
@@ -53,7 +64,7 @@ A successful **Windows** GitHub Actions run produces `process-optimizer-windows-
 **Run normally, not as administrator. Save open work first.** Starting the application does not activate cleanup; no background apps are preapproved and experimental GPU scheduling is off by default.
 
 1. Extract the ZIP and open `process-optimizer.exe` normally, not as administrator.
-2. Open **Settings**. For temporary gaming cleanup, choose **Close during Game Mode** or **Reduce during Game Mode**. For an unused app that actually has a supported current-user Windows startup entry, choose **Disable Windows startup**. Use **Restore Windows startup** to undo that persistent change.
+2. Open **Settings** and select an app. Check its **Current**, **Recommended**, and **SAFETY** information. Choose **Keep**, **Lower during Game Mode**, or **Close during Game Mode** for temporary behavior. For a supported unused current-user startup entry, choose **Disable Windows startup**; choose **Restore Windows startup** to undo it.
 3. Press **Turn ON**. No game selection is needed. Start your game normally.
 4. When finished, press **Turn OFF**. **Settings > Session details** contains exact outcomes; **Advanced tools** preserves the earlier explicit session controls.
 
