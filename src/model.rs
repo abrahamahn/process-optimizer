@@ -1,14 +1,25 @@
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 pub type AppResult<T> = Result<T, String>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Identity {
     pub pid: u32,
     pub created: u64,
     pub path: String,
     pub session_id: u32,
+    #[serde(default)]
+    pub provenance: Option<Provenance>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Provenance {
+    pub owner_sid: String,
+    pub logon_id: u64,
+    pub image_file_id: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -43,12 +54,14 @@ pub enum ActionKind {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ApprovedAction {
     pub target: Identity,
     pub action: ActionKind,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Options {
     pub gpu_priority: bool,
     pub cpu_priority: bool,
@@ -61,7 +74,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            gpu_priority: true,
+            gpu_priority: false,
             cpu_priority: false,
             eco_qos: false,
             memory_priority: false,
@@ -72,6 +85,7 @@ impl Default for Options {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Settings {
     pub game_path: String,
     pub protected_paths: Vec<String>,
@@ -79,6 +93,7 @@ pub struct Settings {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Plan {
     pub game_path: String,
     pub game: Option<Identity>,
@@ -87,6 +102,8 @@ pub struct Plan {
     pub options: Options,
     pub consent: bool,
     pub force_consent: bool,
+    #[serde(default)]
+    pub experimental_consent: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,8 +136,13 @@ impl Value {
     pub fn background(&self) -> Self {
         match *self {
             Self::GpuPriority(v) => Self::GpuPriority(v.min(1)),
-            Self::CpuPriority(v) => Self::CpuPriority(if v == 0x40 || v == 0x4000 { v } else { 0x4000 }),
-            Self::EcoQos { control, state } => Self::EcoQos { control: control | 1, state: state | 1 },
+            Self::CpuPriority(v) => {
+                Self::CpuPriority(if v == 0x40 || v == 0x4000 { v } else { 0x4000 })
+            }
+            Self::EcoQos { control, state } => Self::EcoQos {
+                control: control | 1,
+                state: state | 1,
+            },
             Self::MemoryPriority(v) => Self::MemoryPriority(v.min(2)),
         }
     }
@@ -158,6 +180,7 @@ pub enum CloseState {
     ClosedGracefully,
     Terminated,
     KeptOpen,
+    RequestedPending,
     AlreadyGone,
     Failed,
 }
@@ -188,6 +211,7 @@ impl Stage {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Session {
     pub schema: u32,
     pub id: String,
@@ -222,7 +246,12 @@ impl Session {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FaultKind { Gone, Denied, Unsupported, Other }
+pub enum FaultKind {
+    Gone,
+    Denied,
+    Unsupported,
+    Other,
+}
 
 #[derive(Clone, Debug)]
 pub struct Fault {
@@ -232,7 +261,10 @@ pub struct Fault {
 
 impl Fault {
     pub fn new(kind: FaultKind, message: impl Into<String>) -> Self {
-        Self { kind, message: message.into() }
+        Self {
+            kind,
+            message: message.into(),
+        }
     }
 }
 
