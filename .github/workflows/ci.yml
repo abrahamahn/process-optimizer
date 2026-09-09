@@ -48,6 +48,9 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Build portable application
         run: cargo build --locked --release --bin process-optimizer
+      - name: Verify portable runtime dependencies
+        shell: pwsh
+        run: ./scripts/check-portable.ps1
       - name: Native window creation and read-only GPU probe
         shell: pwsh
         run: |

@@ -1,0 +1,5 @@
+# Bundle the MSVC C runtime into Windows x64 binaries; do not require users
+# to install a separate Visual C++ Redistributable for the portable app.
+# https://doc.rust-lang.org/reference/linkage.html#static-and-dynamic-c-runtimes
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
