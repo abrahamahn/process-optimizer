@@ -1,7 +1,24 @@
-use crate::{gpu::{busiest_engine, dedicated_allocations}, journal::Journal, model::*, policy};
 use super::{gpu, process, runner, wide};
-use std::{cell::RefCell, collections::BTreeMap, mem::{size_of, zeroed}, ptr::{null, null_mut}, sync::{Arc, Mutex}, thread};
-use windows_sys::Win32::{Foundation::*, Graphics::Gdi::*, System::LibraryLoader::GetModuleHandleW, UI::{WindowsAndMessaging::*, Controls::Dialogs::*, HiDpi::*}};
+use crate::{
+    gpu::{busiest_engine, dedicated_allocations},
+    journal::Journal,
+    model::*,
+    policy,
+};
+use std::{
+    cell::RefCell,
+    collections::BTreeMap,
+    mem::{size_of, zeroed},
+    ptr::{null, null_mut},
+    sync::{Arc, Mutex},
+    thread,
+};
+use windows_sys::Win32::{
+    Foundation::*,
+    Graphics::Gdi::*,
+    System::LibraryLoader::GetModuleHandleW,
+    UI::{Controls::Dialogs::*, HiDpi::*, WindowsAndMessaging::*},
+};
 
 const GAME: u16 = 10;
 const BROWSE: u16 = 11;
@@ -47,127 +64,382 @@ struct State {
 }
 
 impl Drop for State {
-    fn drop(&mut self) { unsafe { if !self.font.is_null() { DeleteObject(self.font); } if !self.mono_font.is_null() { DeleteObject(self.mono_font); } } }
+    fn drop(&mut self) {
+        unsafe {
+            if !self.font.is_null() {
+                DeleteObject(self.font);
+            }
+            if !self.mono_font.is_null() {
+                DeleteObject(self.mono_font);
+            }
+        }
+    }
 }
 
 impl State {
     fn new(smoke: bool) -> AppResult<Self> {
-        let settings = if smoke { Settings::default() } else { runner::database()?.settings()? };
-        Ok(Self { window: null_mut(), widgets: BTreeMap::new(), settings, snapshot: Snapshot::default(), actions: BTreeMap::new(), game: None, sample: Arc::new(Mutex::new(None)), sampling: false, minimized: false, font: null_mut(), mono_font: null_mut(), smoke, init_error: None })
+        let settings = if smoke {
+            Settings::default()
+        } else {
+            runner::database()?.settings()?
+        };
+        Ok(Self {
+            window: null_mut(),
+            widgets: BTreeMap::new(),
+            settings,
+            snapshot: Snapshot::default(),
+            actions: BTreeMap::new(),
+            game: None,
+            sample: Arc::new(Mutex::new(None)),
+            sampling: false,
+            minimized: false,
+            font: null_mut(),
+            mono_font: null_mut(),
+            smoke,
+            init_error: None,
+        })
     }
-    fn h(&self, id: u16) -> HWND { *self.widgets.get(&id).unwrap_or(&null_mut()) }
-    fn text(&self, id: u16, value: &str) { unsafe { SetWindowTextW(self.h(id), wide(value).as_ptr()); } }
-    fn checked(&self, id: u16) -> bool { unsafe { SendMessageW(self.h(id), BM_GETCHECK_MSG, 0, 0) == 1 } }
-    fn set_check(&self, id: u16, value: bool) { unsafe { SendMessageW(self.h(id), BM_SETCHECK_MSG, usize::from(value), 0); } }
+    fn h(&self, id: u16) -> HWND {
+        *self.widgets.get(&id).unwrap_or(&null_mut())
+    }
+    fn text(&self, id: u16, value: &str) {
+        unsafe {
+            SetWindowTextW(self.h(id), wide(value).as_ptr());
+        }
+    }
+    fn checked(&self, id: u16) -> bool {
+        unsafe { SendMessageW(self.h(id), BM_GETCHECK_MSG, 0, 0) == 1 }
+    }
+    fn set_check(&self, id: u16, value: bool) {
+        unsafe {
+            SendMessageW(self.h(id), BM_SETCHECK_MSG, usize::from(value), 0);
+        }
+    }
     fn edit_text(&self, id: u16) -> String {
         let length = unsafe { GetWindowTextLengthW(self.h(id)) }.clamp(0, 32767) as usize;
         let mut value = vec![0u16; length + 1];
-        let n = unsafe { GetWindowTextW(self.h(id), value.as_mut_ptr(), value.len() as i32) }.max(0) as usize;
+        let n = unsafe { GetWindowTextW(self.h(id), value.as_mut_ptr(), value.len() as i32) }.max(0)
+            as usize;
         String::from_utf16_lossy(&value[..n])
     }
     fn widget(&mut self, id: u16, class: &str, label: &str, style: u32) -> AppResult<()> {
-        let h = unsafe { CreateWindowExW(if class == "EDIT" || class == "LISTBOX" { WS_EX_CLIENTEDGE } else { 0 }, wide(class).as_ptr(), wide(label).as_ptr(), WS_CHILD | WS_VISIBLE | style, 0, 0, 10, 10, self.window, id as usize as HMENU, GetModuleHandleW(null()), null()) };
-        if h.is_null() { return Err(format!("Could not create native control {id}: {}", std::io::Error::last_os_error())); }
+        let h = unsafe {
+            CreateWindowExW(
+                if class == "EDIT" || class == "LISTBOX" {
+                    WS_EX_CLIENTEDGE
+                } else {
+                    0
+                },
+                wide(class).as_ptr(),
+                wide(label).as_ptr(),
+                WS_CHILD | WS_VISIBLE | style,
+                0,
+                0,
+                10,
+                10,
+                self.window,
+                id as usize as HMENU,
+                GetModuleHandleW(null()),
+                null(),
+            )
+        };
+        if h.is_null() {
+            return Err(format!(
+                "Could not create native control {id}: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
         self.widgets.insert(id, h);
         Ok(())
     }
     fn initialize(&mut self) -> AppResult<()> {
-        self.widget(100, "STATIC", "PROCESS OPTIMIZER  /  GPU-FIRST GAME SESSIONS", 0)?;
+        self.widget(
+            100,
+            "STATIC",
+            "PROCESS OPTIMIZER  /  GPU-FIRST GAME SESSIONS",
+            0,
+        )?;
         self.widget(101, "STATIC", "Select the actual game. Explicitly select background processes; nothing is chosen or closed automatically.", 0)?;
         self.widget(GAME, "EDIT", "", WS_TABSTOP | ES_AUTOHSCROLL as u32)?;
         self.widget(BROWSE, "BUTTON", "Browse game .exe", WS_TABSTOP)?;
         self.widget(USE_GAME, "BUTTON", "Use selected as game", WS_TABSTOP)?;
         self.widget(REFRESH, "BUTTON", "Refresh GPU sample", WS_TABSTOP)?;
         self.widget(102, "STATIC", "PID       Application                 GPU peak    Dedicated MiB   Planned action / protection", 0)?;
-        self.widget(LIST, "LISTBOX", "", WS_TABSTOP | WS_VSCROLL | WS_HSCROLL | LBS_EXTENDEDSEL as u32 | LBS_NOINTEGRALHEIGHT as u32 | LBS_NOTIFY as u32)?;
-        self.widget(GPU_STATUS, "STATIC", "GPU samples are read-only. '-' means unavailable/not observed, not a confirmed zero.", 0)?;
-        for (id, label) in [(LOWER, "Lower priorities"), (CLOSE, "Close gracefully"), (FORCE, "Force-close allowed"), (PROTECT, "Protect app"), (KEEP, "Clear selection plan")] {
+        self.widget(
+            LIST,
+            "LISTBOX",
+            "",
+            WS_TABSTOP
+                | WS_VSCROLL
+                | WS_HSCROLL
+                | LBS_EXTENDEDSEL as u32
+                | LBS_NOINTEGRALHEIGHT as u32
+                | LBS_NOTIFY as u32,
+        )?;
+        self.widget(
+            GPU_STATUS,
+            "STATIC",
+            "GPU samples are read-only. '-' means unavailable/not observed, not a confirmed zero.",
+            0,
+        )?;
+        for (id, label) in [
+            (LOWER, "Lower priorities"),
+            (CLOSE, "Close gracefully"),
+            (FORCE, "Force-close allowed"),
+            (PROTECT, "Protect app"),
+            (KEEP, "Clear selection plan"),
+        ] {
             self.widget(id, "BUTTON", label, WS_TABSTOP)?;
         }
-        for (id, label) in [(OPT_GPU, "GPU priority"), (OPT_CPU, "CPU priority"), (OPT_ECO, "EcoQoS"), (OPT_MEMORY, "Memory priority"), (OPT_LAUNCH, "Launch game if needed")] {
+        for (id, label) in [
+            (OPT_GPU, "GPU priority"),
+            (OPT_CPU, "CPU priority"),
+            (OPT_ECO, "EcoQoS"),
+            (OPT_MEMORY, "Memory priority"),
+            (OPT_LAUNCH, "Launch game if needed"),
+        ] {
             self.widget(id, "BUTTON", label, WS_TABSTOP | BS_AUTOCHECKBOX as u32)?;
         }
         self.widget(DETAILS, "EDIT", "Select processes with Ctrl/Shift, then choose an action.\r\nClosing an app is not a memory snapshot. Unsaved work cannot be restored.\r\nLower GPU priority is a scheduling hint, not a GPU usage cap or exclusive reservation.", ES_MULTILINE as u32 | ES_READONLY as u32 | ES_AUTOVSCROLL as u32 | WS_VSCROLL)?;
-        for (id, label) in [(START, "START GAME SESSION"), (RESTORE, "Restore now"), (REPORT, "Show last report"), (ACK, "Keep current / clear warning"), (SAVE, "Save settings")] {
+        for (id, label) in [
+            (START, "START GAME SESSION"),
+            (RESTORE, "Restore now"),
+            (REPORT, "Show last report"),
+            (ACK, "Keep current / clear warning"),
+            (SAVE, "Save settings"),
+        ] {
             self.widget(id, "BUTTON", label, WS_TABSTOP)?;
         }
-        self.widget(STATUS, "STATIC", "No session active. The worker can restore settings even after this window is closed.", 0)?;
+        self.widget(
+            STATUS,
+            "STATIC",
+            "No session active. The worker can restore settings even after this window is closed.",
+            0,
+        )?;
         self.text(GAME, &self.settings.game_path);
-        for (id, checked) in [(OPT_GPU, self.settings.options.gpu_priority), (OPT_CPU, self.settings.options.cpu_priority), (OPT_ECO, self.settings.options.eco_qos), (OPT_MEMORY, self.settings.options.memory_priority), (OPT_LAUNCH, self.settings.options.launch_game)] { self.set_check(id, checked); }
+        for (id, checked) in [
+            (OPT_GPU, self.settings.options.gpu_priority),
+            (OPT_CPU, self.settings.options.cpu_priority),
+            (OPT_ECO, self.settings.options.eco_qos),
+            (OPT_MEMORY, self.settings.options.memory_priority),
+            (OPT_LAUNCH, self.settings.options.launch_game),
+        ] {
+            self.set_check(id, checked);
+        }
         self.update_fonts();
         self.layout();
-        if !self.smoke { self.refresh(); unsafe { SetTimer(self.window, 1, 1000, None); } }
+        if !self.smoke {
+            self.refresh();
+            unsafe {
+                SetTimer(self.window, 1, 1000, None);
+            }
+        }
         Ok(())
     }
     fn update_fonts(&mut self) {
         let dpi = unsafe { GetDpiForWindow(self.window) }.max(96);
-        let height = -((15 * dpi) / 96) as i32;
+        let height = -(((15 * dpi) / 96) as i32);
         let (old, old_mono) = (self.font, self.mono_font);
-        self.font = unsafe { CreateFontW(height, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 0, 0, wide("Segoe UI").as_ptr()) };
-        self.mono_font = unsafe { CreateFontW(height, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 0, 0, wide("Consolas").as_ptr()) };
+        self.font = unsafe {
+            CreateFontW(
+                height,
+                0,
+                0,
+                0,
+                400,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                wide("Segoe UI").as_ptr(),
+            )
+        };
+        self.mono_font = unsafe {
+            CreateFontW(
+                height,
+                0,
+                0,
+                0,
+                400,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                wide("Consolas").as_ptr(),
+            )
+        };
         for (id, h) in &self.widgets {
-            unsafe { SendMessageW(*h, WM_SETFONT, if *id == LIST || *id == 102 { self.mono_font as usize } else { self.font as usize }, 1); }
+            unsafe {
+                SendMessageW(
+                    *h,
+                    WM_SETFONT,
+                    if *id == LIST || *id == 102 {
+                        self.mono_font as usize
+                    } else {
+                        self.font as usize
+                    },
+                    1,
+                );
+            }
         }
-        unsafe { if !old.is_null() { DeleteObject(old); } if !old_mono.is_null() { DeleteObject(old_mono); } }
+        unsafe {
+            if !old.is_null() {
+                DeleteObject(old);
+            }
+            if !old_mono.is_null() {
+                DeleteObject(old_mono);
+            }
+        }
     }
     fn layout(&self) {
         let mut rect: RECT = unsafe { zeroed() };
-        unsafe { GetClientRect(self.window, &mut rect); }
+        unsafe {
+            GetClientRect(self.window, &mut rect);
+        }
         let dpi = unsafe { GetDpiForWindow(self.window) }.max(96) as f64 / 96.0;
         let w = ((rect.right - rect.left) as f64 / dpi) as i32;
         let h = ((rect.bottom - rect.top) as f64 / dpi) as i32;
-        let put = |id, x: i32, y: i32, width: i32, height: i32| unsafe { MoveWindow(self.h(id), (x as f64 * dpi) as i32, (y as f64 * dpi) as i32, (width.max(1) as f64 * dpi) as i32, (height.max(1) as f64 * dpi) as i32, 1); };
+        let put = |id, x: i32, y: i32, width: i32, height: i32| unsafe {
+            MoveWindow(
+                self.h(id),
+                (x as f64 * dpi) as i32,
+                (y as f64 * dpi) as i32,
+                (width.max(1) as f64 * dpi) as i32,
+                (height.max(1) as f64 * dpi) as i32,
+                1,
+            );
+        };
         let inner = w - 32;
-        put(100, 16, 14, inner, 24); put(101, 16, 42, inner, 24);
-        put(GAME, 16, 72, inner - 480, 30); put(BROWSE, w - 488, 72, 146, 30); put(USE_GAME, w - 334, 72, 162, 30); put(REFRESH, w - 164, 72, 148, 30);
+        put(100, 16, 14, inner, 24);
+        put(101, 16, 42, inner, 24);
+        put(GAME, 16, 72, inner - 480, 30);
+        put(BROWSE, w - 488, 72, 146, 30);
+        put(USE_GAME, w - 334, 72, 162, 30);
+        put(REFRESH, w - 164, 72, 148, 30);
         put(102, 16, 112, inner, 22);
         let list_height = (h - 440).max(180);
         put(LIST, 16, 136, inner, list_height);
         let y = 136 + list_height;
         put(GPU_STATUS, 16, y + 5, inner, 42);
         let button_w = (inner - 32) / 5;
-        for (i, id) in [LOWER, CLOSE, FORCE, PROTECT, KEEP].iter().enumerate() { put(*id, 16 + i as i32 * (button_w + 8), y + 50, button_w, 32); }
-        for (i, id) in [OPT_GPU, OPT_CPU, OPT_ECO, OPT_MEMORY, OPT_LAUNCH].iter().enumerate() { put(*id, 16 + i as i32 * (button_w + 8), y + 90, button_w, 26); }
+        for (i, id) in [LOWER, CLOSE, FORCE, PROTECT, KEEP].iter().enumerate() {
+            put(*id, 16 + i as i32 * (button_w + 8), y + 50, button_w, 32);
+        }
+        for (i, id) in [OPT_GPU, OPT_CPU, OPT_ECO, OPT_MEMORY, OPT_LAUNCH]
+            .iter()
+            .enumerate()
+        {
+            put(*id, 16 + i as i32 * (button_w + 8), y + 90, button_w, 26);
+        }
         put(DETAILS, 16, y + 124, inner, (h - y - 224).max(70));
         let bottom = h - 84;
-        for (i, id) in [START, RESTORE, REPORT, ACK, SAVE].iter().enumerate() { put(*id, 16 + i as i32 * (button_w + 8), bottom, button_w, 36); }
+        for (i, id) in [START, RESTORE, REPORT, ACK, SAVE].iter().enumerate() {
+            put(*id, 16 + i as i32 * (button_w + 8), bottom, button_w, 36);
+        }
         put(STATUS, 16, h - 39, inner, 34);
     }
     fn refresh(&mut self) {
-        if self.sampling { return; }
+        if self.sampling {
+            return;
+        }
         self.sampling = true;
-        self.text(GPU_STATUS, "Sampling GPU activity; no process or setting is being changed...");
+        self.text(
+            GPU_STATUS,
+            "Sampling GPU activity; no process or setting is being changed...",
+        );
         let slot = self.sample.clone();
-        thread::spawn(move || { let result = gpu::snapshot(); if let Ok(mut slot) = slot.lock() { *slot = Some(result); } });
+        thread::spawn(move || {
+            let result = gpu::snapshot();
+            if let Ok(mut slot) = slot.lock() {
+                *slot = Some(result);
+            }
+        });
     }
     fn selected(&self) -> Vec<usize> {
         let count = unsafe { SendMessageW(self.h(LIST), LB_GETSELCOUNT, 0, 0) };
-        if count <= 0 || count as usize > self.snapshot.processes.len() { return vec![]; }
+        if count <= 0 || count as usize > self.snapshot.processes.len() {
+            return vec![];
+        }
         let mut items = vec![0i32; count as usize];
-        let actual = unsafe { SendMessageW(self.h(LIST), LB_GETSELITEMS, items.len(), items.as_mut_ptr() as LPARAM) };
-        if actual < 0 { return vec![]; }
-        items.into_iter().take(actual as usize).filter_map(|i| usize::try_from(i).ok()).filter(|i| *i < self.snapshot.processes.len()).collect()
+        let actual = unsafe {
+            SendMessageW(
+                self.h(LIST),
+                LB_GETSELITEMS,
+                items.len(),
+                items.as_mut_ptr() as LPARAM,
+            )
+        };
+        if actual < 0 {
+            return vec![];
+        }
+        items
+            .into_iter()
+            .take(actual as usize)
+            .filter_map(|i| usize::try_from(i).ok())
+            .filter(|i| *i < self.snapshot.processes.len())
+            .collect()
     }
     fn repopulate(&self) {
-        unsafe { SendMessageW(self.h(LIST), WM_SETREDRAW, 0, 0); SendMessageW(self.h(LIST), LB_RESETCONTENT, 0, 0); }
+        unsafe {
+            SendMessageW(self.h(LIST), WM_SETREDRAW, 0, 0);
+            SendMessageW(self.h(LIST), LB_RESETCONTENT, 0, 0);
+        }
         for p in &self.snapshot.processes {
             let name: String = p.name.chars().take(26).collect();
-            let gpu = busiest_engine(&p.gpu).map(|v| format!("{v:5.1}%")).unwrap_or_else(|| "     -".into());
-            let memory = dedicated_allocations(&p.gpu).map(|v| format!("{:8.1}", v as f64 / 1048576.0)).unwrap_or_else(|| "       -".into());
-            let user_protected = self.settings.protected_paths.iter().any(|v| policy::normalized_path(v) == policy::normalized_path(&p.identity.path));
-            let action = if self.game.as_ref().is_some_and(|g| policy::same_process(g, &p.identity)) { "GAME".into() }
-                else if user_protected { "USER PROTECTED".into() }
-                else if let Some(reason) = &p.protected_reason { format!("PROTECTED: {reason}") }
-                else if let Some(action) = self.actions.get(&p.identity.pid) { format!("{:?}", action.action) }
-                else { "Keep (default)".into() };
-            let row = format!("{:7}  {:26}  {}    {}    {}", p.identity.pid, name, gpu, memory, action);
-            unsafe { SendMessageW(self.h(LIST), LB_ADDSTRING, 0, wide(&row).as_ptr() as LPARAM); }
+            let gpu = busiest_engine(&p.gpu)
+                .map(|v| format!("{v:5.1}%"))
+                .unwrap_or_else(|| "     -".into());
+            let memory = dedicated_allocations(&p.gpu)
+                .map(|v| format!("{:8.1}", v as f64 / 1048576.0))
+                .unwrap_or_else(|| "       -".into());
+            let user_protected =
+                self.settings.protected_paths.iter().any(|v| {
+                    policy::normalized_path(v) == policy::normalized_path(&p.identity.path)
+                });
+            let action = if self
+                .game
+                .as_ref()
+                .is_some_and(|g| policy::same_process(g, &p.identity))
+            {
+                "GAME".into()
+            } else if user_protected {
+                "USER PROTECTED".into()
+            } else if let Some(reason) = &p.protected_reason {
+                format!("PROTECTED: {reason}")
+            } else if let Some(action) = self.actions.get(&p.identity.pid) {
+                format!("{:?}", action.action)
+            } else {
+                "Keep (default)".into()
+            };
+            let row = format!(
+                "{:7}  {:26}  {}    {}    {}",
+                p.identity.pid, name, gpu, memory, action
+            );
+            unsafe {
+                SendMessageW(self.h(LIST), LB_ADDSTRING, 0, wide(&row).as_ptr() as LPARAM);
+            }
         }
-        unsafe { SendMessageW(self.h(LIST), LB_SETHORIZONTALEXTENT, 1800, 0); SendMessageW(self.h(LIST), WM_SETREDRAW, 1, 0); InvalidateRect(self.h(LIST), null(), 1); }
+        unsafe {
+            SendMessageW(self.h(LIST), LB_SETHORIZONTALEXTENT, 1800, 0);
+            SendMessageW(self.h(LIST), WM_SETREDRAW, 1, 0);
+            InvalidateRect(self.h(LIST), null(), 1);
+        }
     }
     fn update_settings(&mut self) {
         self.settings.game_path = self.edit_text(GAME).trim().to_string();
-        if self.game.as_ref().is_some_and(|g| policy::normalized_path(&g.path) != policy::normalized_path(&self.settings.game_path)) { self.game = None; }
+        if self.game.as_ref().is_some_and(|g| {
+            policy::normalized_path(&g.path) != policy::normalized_path(&self.settings.game_path)
+        }) {
+            self.game = None;
+        }
         self.settings.options.gpu_priority = self.checked(OPT_GPU);
         self.settings.options.cpu_priority = self.checked(OPT_CPU);
         self.settings.options.eco_qos = self.checked(OPT_ECO);
@@ -176,98 +448,208 @@ impl State {
     }
     fn plan_preview(&self) {
         let mut text = String::from("APPROVAL PLAN — selection is for this session only\r\n");
-        for action in self.actions.values() { text.push_str(&format!("{:?}: PID {}  {}\r\n", action.action, action.target.pid, action.target.path)); }
+        for action in self.actions.values() {
+            text.push_str(&format!(
+                "{:?}: PID {}  {}\r\n",
+                action.action, action.target.pid, action.target.path
+            ));
+        }
         text.push_str("\r\nGPU priority is not a usage cap. Close releases work by ending the selected process, not by forcing VRAM eviction.\r\nNo documents, RAM contents, browser tabs or unsaved work are snapshotted. No automatic app relaunch.");
         self.text(DETAILS, &text);
     }
     fn mark(&mut self, action: Option<ActionKind>) -> AppResult<()> {
         let selected = self.selected();
-        if selected.is_empty() { return Err("Select background process rows first (Ctrl/Shift for multiple).".into()); }
+        if selected.is_empty() {
+            return Err("Select background process rows first (Ctrl/Shift for multiple).".into());
+        }
         for index in selected {
             let row = &self.snapshot.processes[index];
-            if action.is_none() { self.actions.remove(&row.identity.pid); continue; }
-            if let Some(reason) = &row.protected_reason { return Err(format!("{} is protected: {reason}", row.name)); }
-            if self.game.as_ref().is_some_and(|g| policy::same_process(g, &row.identity)) { return Err("The selected game is protected.".into()); }
-            if self.settings.protected_paths.iter().any(|p| policy::normalized_path(p) == policy::normalized_path(&row.identity.path)) { return Err("This application is in your protected list.".into()); }
-            self.actions.insert(row.identity.pid, ApprovedAction { target: row.identity.clone(), action: action.unwrap() });
+            if action.is_none() {
+                self.actions.remove(&row.identity.pid);
+                continue;
+            }
+            if let Some(reason) = &row.protected_reason {
+                return Err(format!("{} is protected: {reason}", row.name));
+            }
+            if self
+                .game
+                .as_ref()
+                .is_some_and(|g| policy::same_process(g, &row.identity))
+            {
+                return Err("The selected game is protected.".into());
+            }
+            if self
+                .settings
+                .protected_paths
+                .iter()
+                .any(|p| policy::normalized_path(p) == policy::normalized_path(&row.identity.path))
+            {
+                return Err("This application is in your protected list.".into());
+            }
+            self.actions.insert(
+                row.identity.pid,
+                ApprovedAction {
+                    target: row.identity.clone(),
+                    action: action.unwrap(),
+                },
+            );
         }
-        self.repopulate(); self.plan_preview(); Ok(())
+        self.repopulate();
+        self.plan_preview();
+        Ok(())
     }
     fn use_game(&mut self) -> AppResult<()> {
         let selected = self.selected();
-        if selected.len() != 1 { return Err("Select exactly one actual game process.".into()); }
+        if selected.len() != 1 {
+            return Err("Select exactly one actual game process.".into());
+        }
         let row = &self.snapshot.processes[selected[0]];
-        if let Some(reason) = &row.protected_reason { return Err(format!("Select the actual game, not a protected launcher: {reason}")); }
+        if let Some(reason) = &row.protected_reason {
+            return Err(format!(
+                "Select the actual game, not a protected launcher: {reason}"
+            ));
+        }
         self.game = Some(row.identity.clone());
         self.settings.game_path = row.identity.path.clone();
         self.actions.remove(&row.identity.pid);
         self.text(GAME, &row.identity.path);
-        self.repopulate(); self.plan_preview(); Ok(())
+        self.repopulate();
+        self.plan_preview();
+        Ok(())
     }
     fn protect(&mut self) -> AppResult<()> {
         let selected = self.selected();
-        if selected.is_empty() { return Err("Select the application(s) to protect.".into()); }
+        if selected.is_empty() {
+            return Err("Select the application(s) to protect.".into());
+        }
         for index in selected {
             let row = &self.snapshot.processes[index];
-            if row.identity.path.is_empty() { continue; }
+            if row.identity.path.is_empty() {
+                continue;
+            }
             self.actions.remove(&row.identity.pid);
-            if !self.settings.protected_paths.iter().any(|p| policy::normalized_path(p) == policy::normalized_path(&row.identity.path)) { self.settings.protected_paths.push(row.identity.path.clone()); }
+            if !self
+                .settings
+                .protected_paths
+                .iter()
+                .any(|p| policy::normalized_path(p) == policy::normalized_path(&row.identity.path))
+            {
+                self.settings
+                    .protected_paths
+                    .push(row.identity.path.clone());
+            }
         }
         runner::database()?.save_settings(&self.settings)?;
-        self.repopulate(); self.plan_preview(); Ok(())
+        self.repopulate();
+        self.plan_preview();
+        Ok(())
     }
     fn browse(&mut self) -> AppResult<()> {
         let mut filename = vec![0u16; 32768];
         let filter: Vec<u16> = "Executables (*.exe)\0*.exe\0\0".encode_utf16().collect();
         let mut dialog: OPENFILENAMEW = unsafe { zeroed() };
-        dialog.lStructSize = size_of::<OPENFILENAMEW>() as u32; dialog.hwndOwner = self.window;
-        dialog.lpstrFilter = filter.as_ptr(); dialog.lpstrFile = filename.as_mut_ptr(); dialog.nMaxFile = filename.len() as u32;
+        dialog.lStructSize = size_of::<OPENFILENAMEW>() as u32;
+        dialog.hwndOwner = self.window;
+        dialog.lpstrFilter = filter.as_ptr();
+        dialog.lpstrFile = filename.as_mut_ptr();
+        dialog.nMaxFile = filename.len() as u32;
         dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
         if unsafe { GetOpenFileNameW(&mut dialog) } != 0 {
-            let n = filename.iter().position(|v| *v == 0).unwrap_or(filename.len());
-            self.settings.game_path = String::from_utf16_lossy(&filename[..n]); self.game = None; self.text(GAME, &self.settings.game_path);
+            let n = filename
+                .iter()
+                .position(|v| *v == 0)
+                .unwrap_or(filename.len());
+            self.settings.game_path = String::from_utf16_lossy(&filename[..n]);
+            self.game = None;
+            self.text(GAME, &self.settings.game_path);
         }
         Ok(())
     }
     fn start(&mut self) -> AppResult<()> {
         self.update_settings();
-        if process::is_elevated().map_err(|e| e.message)? { return Err("Close this elevated window and run the app normally, not as administrator.".into()); }
+        if process::is_elevated().map_err(|e| e.message)? {
+            return Err(
+                "Close this elevated window and run the app normally, not as administrator.".into(),
+            );
+        }
         let mut db = runner::database()?;
-        if db.active()?.is_some() { return Err("Restore/review the existing session before starting another.".into()); }
-        if self.actions.is_empty() { return Err("Choose at least one background process action. There is no automatic kill list.".into()); }
-        let mut plan = Plan { game_path: self.settings.game_path.clone(), game: self.game.clone(), actions: self.actions.values().cloned().collect(), protected_paths: self.settings.protected_paths.clone(), options: self.settings.options.clone(), consent: true, force_consent: true };
+        if db.active()?.is_some() {
+            return Err("Restore/review the existing session before starting another.".into());
+        }
+        if self.actions.is_empty() {
+            return Err(
+                "Choose at least one background process action. There is no automatic kill list."
+                    .into(),
+            );
+        }
+        let mut plan = Plan {
+            game_path: self.settings.game_path.clone(),
+            game: self.game.clone(),
+            actions: self.actions.values().cloned().collect(),
+            protected_paths: self.settings.protected_paths.clone(),
+            options: self.settings.options.clone(),
+            consent: true,
+            force_consent: true,
+        };
         policy::validate(&plan)?;
         self.plan_preview();
         let summary = format!("Start a session for:\n{}\n\nApply the {} explicitly listed process actions?\n\nClosing applications may lose unsaved work. A settings journal cannot restore that work. GPU priority is a hint, not a GPU lock.\n\nNo security, network, Bluetooth, audio or Windows service settings will be changed.", plan.game_path, plan.actions.len());
-        if !confirm(self.window, &summary) { return Ok(()); }
-        let forced: Vec<_> = plan.actions.iter().filter(|a| a.action == ActionKind::ForceClose).collect();
+        if !confirm(self.window, &summary) {
+            return Ok(());
+        }
+        let forced: Vec<_> = plan
+            .actions
+            .iter()
+            .filter(|a| a.action == ActionKind::ForceClose)
+            .collect();
         plan.force_consent = forced.is_empty() || confirm(self.window, &format!("SEPARATE FORCE-TERMINATION APPROVAL\n\nAfter a normal close request times out, terminate these exact processes?\n{}\n\nThis can permanently lose unsaved work. There is no memory snapshot. Permission applies to this session only.", forced.iter().map(|a| format!("PID {} — {}", a.target.pid, a.target.path)).collect::<Vec<_>>().join("\n")));
-        if !plan.force_consent { return Ok(()); }
+        if !plan.force_consent {
+            return Ok(());
+        }
         let session = Session::new(runner::fresh_id(), plan);
         db.save_settings(&self.settings)?;
         db.create(&session)?;
         if let Err(e) = runner::spawn_worker("--session", Some(&session.id)) {
-            let mut failed = session; failed.stage = Stage::Restored; failed.note(format!("Worker launch failed before mutation: {e}")); db.save(&failed)?; return Err(e);
+            let mut failed = session;
+            failed.stage = Stage::Restored;
+            failed.note(format!("Worker launch failed before mutation: {e}"));
+            db.save(&failed)?;
+            return Err(e);
         }
-        self.actions.clear(); self.repopulate();
-        self.text(STATUS, "Worker starting. No application is touched until the actual game is running.");
+        self.actions.clear();
+        self.repopulate();
+        self.text(
+            STATUS,
+            "Worker starting. No application is touched until the actual game is running.",
+        );
         Ok(())
     }
     fn restore(&self) -> AppResult<()> {
         let db = runner::database()?;
-        let Some(session) = db.active()? else { self.text(STATUS, "No unfinished settings changes."); return Ok(()); };
+        let Some(session) = db.active()? else {
+            self.text(STATUS, "No unfinished settings changes.");
+            return Ok(());
+        };
         db.request_stop(&session.id)?;
-        if session.worker.as_ref().is_some_and(|w| matches!(process::alive(w), Ok(true))) {
+        if session
+            .worker
+            .as_ref()
+            .is_some_and(|w| matches!(process::alive(w), Ok(true)))
+        {
             self.text(STATUS, "Restore requested. The worker will stop applying changes and restore recorded settings.");
             Ok(())
-        } else { runner::spawn_worker("--recover", None) }
+        } else {
+            runner::spawn_worker("--recover", None)
+        }
     }
     fn report(&self) -> AppResult<()> {
         let db = runner::database()?;
         if let Some(session) = db.latest()? {
             let report = serde_json::to_string_pretty(&session).map_err(|e| e.to_string())?;
             self.text(DETAILS, &report.replace('\n', "\r\n"));
-        } else { self.text(DETAILS, "No game session has been recorded yet."); }
+        } else {
+            self.text(DETAILS, "No game session has been recorded yet.");
+        }
         Ok(())
     }
     fn command(&mut self, id: u16, notification: u16) -> AppResult<()> {
@@ -278,7 +660,9 @@ impl State {
             }
             return Ok(());
         }
-        if notification != 0 { return Ok(()); }
+        if notification != 0 {
+            return Ok(());
+        }
         match id {
             REFRESH => { self.refresh(); Ok(()) }, BROWSE => self.browse(), USE_GAME => self.use_game(),
             LOWER => self.mark(Some(ActionKind::LowerPriorities)), CLOSE => self.mark(Some(ActionKind::Close)), FORCE => self.mark(Some(ActionKind::ForceClose)), KEEP => self.mark(None), PROTECT => self.protect(),
@@ -297,44 +681,97 @@ impl State {
             match result {
                 Ok(snapshot) => {
                     self.snapshot = snapshot;
-                    self.actions.retain(|_, action| self.snapshot.processes.iter().any(|p| policy::same_process(&p.identity, &action.target)));
-                    self.text(GPU_STATUS, &self.snapshot.gpu_status); self.repopulate();
+                    self.actions.retain(|_, action| {
+                        self.snapshot
+                            .processes
+                            .iter()
+                            .any(|p| policy::same_process(&p.identity, &action.target))
+                    });
+                    self.text(GPU_STATUS, &self.snapshot.gpu_status);
+                    self.repopulate();
                 }
                 Err(e) => self.text(GPU_STATUS, &format!("GPU sample unavailable: {e}")),
             }
         }
-        if self.minimized { return; }
+        if self.minimized {
+            return;
+        }
         if let Ok(db) = runner::database() {
             match db.latest() {
                 Ok(Some(s)) => {
-                    let worker_alive = s.worker.as_ref().is_some_and(|w| matches!(process::alive(w), Ok(true)));
-                    let status = if !s.stage.finished() && !worker_alive && s.stage != Stage::Pending {
+                    let worker_alive = s
+                        .worker
+                        .as_ref()
+                        .is_some_and(|w| matches!(process::alive(w), Ok(true)));
+                    let status = if !s.stage.finished()
+                        && !worker_alive
+                        && s.stage != Stage::Pending
+                    {
                         format!("{:?}: worker not running. Click Restore now; original values remain in the recovery journal.", s.stage)
                     } else {
-                        format!("Session {:?} | {} settings recorded | {} close attempts. {}", s.stage, s.changes.len(), s.closed.len(), if s.stage == Stage::RecoveryNeeded { "Review conflicts before continuing." } else { "Closing/relaunching apps is not memory restoration." })
+                        format!(
+                            "Session {:?} | {} settings recorded | {} close attempts. {}",
+                            s.stage,
+                            s.changes.len(),
+                            s.closed.len(),
+                            if s.stage == Stage::RecoveryNeeded {
+                                "Review conflicts before continuing."
+                            } else {
+                                "Closing/relaunching apps is not memory restoration."
+                            }
+                        )
                     };
                     self.text(STATUS, &status);
                 }
-                Err(e) => self.text(STATUS, &format!("Journal warning — no changes will be attempted: {e}")),
-                _ => {},
+                Err(e) => self.text(
+                    STATUS,
+                    &format!("Journal warning — no changes will be attempted: {e}"),
+                ),
+                _ => {}
             }
         }
     }
 }
 
 fn confirm(owner: HWND, message: &str) -> bool {
-    unsafe { MessageBoxW(owner, wide(message).as_ptr(), wide("Process Optimizer — explicit approval").as_ptr(), MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES }
+    unsafe {
+        MessageBoxW(
+            owner,
+            wide(message).as_ptr(),
+            wide("Process Optimizer — explicit approval").as_ptr(),
+            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2,
+        ) == IDYES
+    }
 }
-pub fn error(message: &str) { unsafe { MessageBoxW(null_mut(), wide(message).as_ptr(), wide("Process Optimizer").as_ptr(), MB_OK | MB_ICONWARNING); } }
+pub fn error(message: &str) {
+    unsafe {
+        MessageBoxW(
+            null_mut(),
+            wide(message).as_ptr(),
+            wide("Process Optimizer").as_ptr(),
+            MB_OK | MB_ICONWARNING,
+        );
+    }
+}
 
 unsafe extern "system" fn window_proc(window: HWND, message: u32, w: WPARAM, l: LPARAM) -> LRESULT {
     if message == WM_CREATE {
         let create = &*(l as *const CREATESTRUCTW);
         SetWindowLongPtrW(window, GWLP_USERDATA, create.lpCreateParams as isize);
     }
-    if message == WM_CLOSE { DestroyWindow(window); return 0; }
-    if message == WM_DESTROY { KillTimer(window, 1); PostQuitMessage(0); return 0; }
-    if message == WM_NCDESTROY { SetWindowLongPtrW(window, GWLP_USERDATA, 0); return DefWindowProcW(window, message, w, l); }
+    if message == WM_CLOSE {
+        DestroyWindow(window);
+        return 0;
+    }
+    if message == WM_DESTROY {
+        KillTimer(window, 1);
+        PostQuitMessage(0);
+        return 0;
+    }
+    if message == WM_NCDESTROY {
+        SetWindowLongPtrW(window, GWLP_USERDATA, 0);
+        return DefWindowProcW(window, message, w, l);
+    }
     let pointer = GetWindowLongPtrW(window, GWLP_USERDATA) as *const RefCell<State>;
     if !pointer.is_null() {
         // Native controls can synchronously re-enter this callback. Never create
@@ -343,18 +780,43 @@ unsafe extern "system" fn window_proc(window: HWND, message: u32, w: WPARAM, l: 
             match message {
                 WM_CREATE => {
                     state.window = window;
-                    if let Err(e) = state.initialize() { state.init_error = Some(e); return -1; }
+                    if let Err(e) = state.initialize() {
+                        state.init_error = Some(e);
+                        return -1;
+                    }
                     return 0;
                 }
-                WM_SIZE => { state.minimized = w == SIZE_MINIMIZED as usize; if !state.minimized { state.layout(); } return 0; }
+                WM_SIZE => {
+                    state.minimized = w == SIZE_MINIMIZED as usize;
+                    if !state.minimized {
+                        state.layout();
+                    }
+                    return 0;
+                }
                 WM_DPICHANGED => {
                     let rect = &*(l as *const RECT);
-                    SetWindowPos(window, null_mut(), rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, SWP_NOZORDER | SWP_NOACTIVATE);
-                    state.update_fonts(); state.layout(); return 0;
+                    SetWindowPos(
+                        window,
+                        null_mut(),
+                        rect.left,
+                        rect.top,
+                        rect.right - rect.left,
+                        rect.bottom - rect.top,
+                        SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                    state.update_fonts();
+                    state.layout();
+                    return 0;
                 }
-                WM_TIMER => { state.poll(); return 0; }
+                WM_TIMER => {
+                    state.poll();
+                    return 0;
+                }
                 WM_COMMAND => {
-                    if let Err(e) = state.command((w & 0xffff) as u16, ((w >> 16) & 0xffff) as u16) { error(&e); }
+                    if let Err(e) = state.command((w & 0xffff) as u16, ((w >> 16) & 0xffff) as u16)
+                    {
+                        error(&e);
+                    }
                     return 0;
                 }
                 WM_GETMINMAXINFO => {
@@ -364,7 +826,7 @@ unsafe extern "system" fn window_proc(window: HWND, message: u32, w: WPARAM, l: 
                     minmax.ptMinTrackSize.y = (760 * dpi / 96) as i32;
                     return 0;
                 }
-                _ => {},
+                _ => {}
             }
         }
     }
@@ -378,16 +840,42 @@ fn run_inner(smoke: bool) -> AppResult<()> {
         let instance = GetModuleHandleW(null());
         let name = wide("ProcessOptimizerNativeWindow");
         let mut class: WNDCLASSW = zeroed();
-        class.hInstance = instance; class.lpszClassName = name.as_ptr(); class.lpfnWndProc = Some(window_proc);
-        class.hCursor = LoadCursorW(null_mut(), IDC_ARROW); class.hbrBackground = (COLOR_WINDOW + 1) as HBRUSH;
-        if RegisterClassW(&class) == 0 { return Err(std::io::Error::last_os_error().to_string()); }
+        class.hInstance = instance;
+        class.lpszClassName = name.as_ptr();
+        class.lpfnWndProc = Some(window_proc);
+        class.hCursor = LoadCursorW(null_mut(), IDC_ARROW);
+        class.hbrBackground = (COLOR_WINDOW + 1) as HBRUSH;
+        if RegisterClassW(&class) == 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
         let dpi = GetDpiForSystem().max(96);
-        let window = CreateWindowExW(WS_EX_CONTROLPARENT, name.as_ptr(), wide("Process Optimizer — GPU-first game session").as_ptr(), WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, (1120 * dpi / 96) as i32, (850 * dpi / 96) as i32, null_mut(), null_mut(), instance, (&*state as *const RefCell<State>).cast());
-        if window.is_null() { return Err(state.borrow_mut().init_error.take().unwrap_or_else(|| std::io::Error::last_os_error().to_string())); }
+        let window = CreateWindowExW(
+            WS_EX_CONTROLPARENT,
+            name.as_ptr(),
+            wide("Process Optimizer — GPU-first game session").as_ptr(),
+            WS_OVERLAPPEDWINDOW,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            (1120 * dpi / 96) as i32,
+            (850 * dpi / 96) as i32,
+            null_mut(),
+            null_mut(),
+            instance,
+            (&*state as *const RefCell<State>).cast(),
+        );
+        if window.is_null() {
+            return Err(state
+                .borrow_mut()
+                .init_error
+                .take()
+                .unwrap_or_else(|| std::io::Error::last_os_error().to_string()));
+        }
         if smoke {
             let controls = state.borrow().widgets.len();
             DestroyWindow(window);
-            if controls < 25 { return Err(format!("Incomplete UI: {controls} controls.")); }
+            if controls < 25 {
+                return Err(format!("Incomplete UI: {controls} controls."));
+            }
             return Ok(());
         }
         ShowWindow(window, SW_SHOW);
@@ -395,12 +883,23 @@ fn run_inner(smoke: bool) -> AppResult<()> {
         let mut message: MSG = zeroed();
         loop {
             let status = GetMessageW(&mut message, null_mut(), 0, 0);
-            if status == -1 { return Err(std::io::Error::last_os_error().to_string()); }
-            if status == 0 { break; }
-            if IsDialogMessageW(window, &message) == 0 { TranslateMessage(&message); DispatchMessageW(&message); }
+            if status == -1 {
+                return Err(std::io::Error::last_os_error().to_string());
+            }
+            if status == 0 {
+                break;
+            }
+            if IsDialogMessageW(window, &message) == 0 {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
         }
     }
     Ok(())
 }
-pub fn run() -> AppResult<()> { run_inner(false) }
-pub fn smoke() -> AppResult<()> { run_inner(true) }
+pub fn run() -> AppResult<()> {
+    run_inner(false)
+}
+pub fn smoke() -> AppResult<()> {
+    run_inner(true)
+}

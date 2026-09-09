@@ -1,11 +1,22 @@
-use crate::{engine::Backend, model::*, policy};
 use super::wide;
-use std::{collections::HashSet, ffi::c_void, mem::{size_of, zeroed}, ptr::{null, null_mut}, sync::{Arc, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant}};
+use crate::{engine::Backend, model::*, policy};
+use std::{
+    collections::HashSet,
+    mem::{size_of, zeroed},
+    ptr::{null, null_mut},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
+};
 use windows_sys::Win32::{
     Foundation::*,
-    Security::{GetTokenInformation, TokenUser, TokenElevation, TOKEN_USER, TOKEN_ELEVATION, TOKEN_QUERY},
     Security::Authorization::ConvertSidToStringSidW,
-    System::{Diagnostics::ToolHelp::*, Threading::*, SystemInformation::GetWindowsDirectoryW},
+    Security::{
+        GetTokenInformation, TokenElevation, TokenUser, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER,
+    },
+    System::{Diagnostics::ToolHelp::*, SystemInformation::GetWindowsDirectoryW, Threading::*},
     UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, PostMessageW, WM_CLOSE},
 };
 
@@ -21,33 +32,69 @@ unsafe extern "system" {
 }
 
 pub struct Handle(pub HANDLE);
-impl Drop for Handle { fn drop(&mut self) { if !self.0.is_null() && self.0 != INVALID_HANDLE_VALUE { unsafe { CloseHandle(self.0); } } } }
+impl Drop for Handle {
+    fn drop(&mut self) {
+        if !self.0.is_null() && self.0 != INVALID_HANDLE_VALUE {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+}
 
 fn last_fault(context: &str) -> Fault {
     let error = std::io::Error::last_os_error();
-    Fault::new(if error.raw_os_error() == Some(5) { FaultKind::Denied } else { FaultKind::Other }, format!("{context}: {error}"))
+    Fault::new(
+        if error.raw_os_error() == Some(5) {
+            FaultKind::Denied
+        } else {
+            FaultKind::Other
+        },
+        format!("{context}: {error}"),
+    )
 }
 
 pub fn open(pid: u32, rights: u32) -> NativeResult<Handle> {
     let raw = unsafe { OpenProcess(rights, 0, pid) };
     if raw.is_null() {
         let e = std::io::Error::last_os_error();
-        return Err(Fault::new(if e.raw_os_error() == Some(87) { FaultKind::Gone } else { FaultKind::Denied }, format!("OpenProcess({pid}): {e}")));
+        return Err(Fault::new(
+            if e.raw_os_error() == Some(87) {
+                FaultKind::Gone
+            } else {
+                FaultKind::Denied
+            },
+            format!("OpenProcess({pid}): {e}"),
+        ));
     }
     Ok(Handle(raw))
 }
 
-fn filetime(t: FILETIME) -> u64 { (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime) }
+fn filetime(t: FILETIME) -> u64 {
+    (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime)
+}
 
 pub fn identity_from_handle(h: HANDLE, pid: u32) -> NativeResult<Identity> {
-    let (mut created, mut exited, mut kernel, mut user): (FILETIME, FILETIME, FILETIME, FILETIME) = unsafe { zeroed() };
-    if unsafe { GetProcessTimes(h, &mut created, &mut exited, &mut kernel, &mut user) } == 0 { return Err(last_fault("GetProcessTimes")); }
+    let (mut created, mut exited, mut kernel, mut user): (FILETIME, FILETIME, FILETIME, FILETIME) =
+        unsafe { zeroed() };
+    if unsafe { GetProcessTimes(h, &mut created, &mut exited, &mut kernel, &mut user) } == 0 {
+        return Err(last_fault("GetProcessTimes"));
+    }
     let mut buffer = vec![0u16; 32768];
     let mut length = buffer.len() as u32;
-    if unsafe { QueryFullProcessImageNameW(h, 0, buffer.as_mut_ptr(), &mut length) } == 0 { return Err(last_fault("QueryFullProcessImageName")); }
+    if unsafe { QueryFullProcessImageNameW(h, 0, buffer.as_mut_ptr(), &mut length) } == 0 {
+        return Err(last_fault("QueryFullProcessImageName"));
+    }
     let mut session = 0;
-    if unsafe { ProcessIdToSessionId(pid, &mut session) } == 0 { return Err(last_fault("ProcessIdToSessionId")); }
-    Ok(Identity { pid, created: filetime(created), path: String::from_utf16_lossy(&buffer[..length as usize]), session_id: session })
+    if unsafe { ProcessIdToSessionId(pid, &mut session) } == 0 {
+        return Err(last_fault("ProcessIdToSessionId"));
+    }
+    Ok(Identity {
+        pid,
+        created: filetime(created),
+        path: String::from_utf16_lossy(&buffer[..length as usize]),
+        session_id: session,
+    })
 }
 
 pub fn identity(pid: u32) -> NativeResult<Identity> {
@@ -56,25 +103,48 @@ pub fn identity(pid: u32) -> NativeResult<Identity> {
 }
 
 pub fn current_identity() -> NativeResult<Identity> {
-    identity_from_handle(unsafe { GetCurrentProcess() }, unsafe { GetCurrentProcessId() })
+    identity_from_handle(unsafe { GetCurrentProcess() }, unsafe {
+        GetCurrentProcessId()
+    })
 }
 
 fn token_sid(process: HANDLE) -> NativeResult<String> {
     let mut token = null_mut();
-    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 { return Err(last_fault("OpenProcessToken")); }
+    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
+        return Err(last_fault("OpenProcessToken"));
+    }
     let token = Handle(token);
     let mut length = 0;
-    unsafe { GetTokenInformation(token.0, TokenUser, null_mut(), 0, &mut length); }
-    if length == 0 || length > 65536 { return Err(last_fault("TokenUser length")); }
+    unsafe {
+        GetTokenInformation(token.0, TokenUser, null_mut(), 0, &mut length);
+    }
+    if length == 0 || length > 65536 {
+        return Err(last_fault("TokenUser length"));
+    }
     // u64 storage ensures alignment for TOKEN_USER and SID pointers.
     let mut storage = vec![0u64; (length as usize).div_ceil(8)];
-    if unsafe { GetTokenInformation(token.0, TokenUser, storage.as_mut_ptr().cast(), length, &mut length) } == 0 { return Err(last_fault("TokenUser")); }
+    if unsafe {
+        GetTokenInformation(
+            token.0,
+            TokenUser,
+            storage.as_mut_ptr().cast(),
+            length,
+            &mut length,
+        )
+    } == 0
+    {
+        return Err(last_fault("TokenUser"));
+    }
     let info = unsafe { &*storage.as_ptr().cast::<TOKEN_USER>() };
     let mut text = null_mut();
-    if unsafe { ConvertSidToStringSidW(info.User.Sid, &mut text) } == 0 { return Err(last_fault("SID conversion")); }
+    if unsafe { ConvertSidToStringSidW(info.User.Sid, &mut text) } == 0 {
+        return Err(last_fault("SID conversion"));
+    }
     let result = unsafe {
         let mut n = 0;
-        while n < 1024 && *text.add(n) != 0 { n += 1; }
+        while n < 1024 && *text.add(n) != 0 {
+            n += 1;
+        }
         let s = String::from_utf16_lossy(std::slice::from_raw_parts(text, n));
         LocalFree(text.cast());
         s
@@ -82,28 +152,57 @@ fn token_sid(process: HANDLE) -> NativeResult<String> {
     Ok(result)
 }
 
-pub fn current_sid() -> NativeResult<String> { token_sid(unsafe { GetCurrentProcess() }) }
+pub fn current_sid() -> NativeResult<String> {
+    token_sid(unsafe { GetCurrentProcess() })
+}
 
 pub fn is_elevated() -> NativeResult<bool> {
     let mut token = null_mut();
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 { return Err(last_fault("OpenProcessToken")); }
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(last_fault("OpenProcessToken"));
+    }
     let token = Handle(token);
     let mut elevation: TOKEN_ELEVATION = unsafe { zeroed() };
     let mut length = 0;
-    if unsafe { GetTokenInformation(token.0, TokenElevation, (&mut elevation as *mut TOKEN_ELEVATION).cast(), size_of::<TOKEN_ELEVATION>() as u32, &mut length) } == 0 { return Err(last_fault("TokenElevation")); }
+    if unsafe {
+        GetTokenInformation(
+            token.0,
+            TokenElevation,
+            (&mut elevation as *mut TOKEN_ELEVATION).cast(),
+            size_of::<TOKEN_ELEVATION>() as u32,
+            &mut length,
+        )
+    } == 0
+    {
+        return Err(last_fault("TokenElevation"));
+    }
     Ok(elevation.TokenIsElevated != 0)
 }
 
 pub fn exact_handle(id: &Identity, rights: u32) -> NativeResult<Handle> {
-    let h = open(id.pid, rights | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE)?;
-    if unsafe { WaitForSingleObject(h.0, 0) } == WAIT_OBJECT_0 { return Err(Fault::new(FaultKind::Gone, "Original process exited.")); }
+    let h = open(
+        id.pid,
+        rights | PROCESS_QUERY_LIMITED_INFORMATION | 0x0010_0000,
+    )?;
+    if unsafe { WaitForSingleObject(h.0, 0) } == WAIT_OBJECT_0 {
+        return Err(Fault::new(FaultKind::Gone, "Original process exited."));
+    }
     let current = identity_from_handle(h.0, id.pid)?;
-    if !policy::same_process(id, &current) { return Err(Fault::new(FaultKind::Gone, "PID was reused or executable identity changed.")); }
+    if !policy::same_process(id, &current) {
+        return Err(Fault::new(
+            FaultKind::Gone,
+            "PID was reused or executable identity changed.",
+        ));
+    }
     Ok(h)
 }
 
 pub fn alive(id: &Identity) -> NativeResult<bool> {
-    match exact_handle(id, 0) { Ok(_) => Ok(true), Err(e) if e.kind == FaultKind::Gone => Ok(false), Err(e) => Err(e) }
+    match exact_handle(id, 0) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind == FaultKind::Gone => Ok(false),
+        Err(e) => Err(e),
+    }
 }
 
 struct Safety {
@@ -118,20 +217,53 @@ impl Safety {
         let me = current_identity()?;
         let mut path = vec![0u16; 32768];
         let n = unsafe { GetWindowsDirectoryW(path.as_mut_ptr(), path.len() as u32) };
-        if n == 0 || n as usize >= path.len() { return Err(last_fault("GetWindowsDirectory")); }
-        Ok(Self { sid: current_sid()?, session: me.session_id, self_path: policy::normalized_path(&me.path), windows_path: policy::normalized_path(&String::from_utf16_lossy(&path[..n as usize])) })
+        if n == 0 || n as usize >= path.len() {
+            return Err(last_fault("GetWindowsDirectory"));
+        }
+        Ok(Self {
+            sid: current_sid()?,
+            session: me.session_id,
+            self_path: policy::normalized_path(&me.path),
+            windows_path: policy::normalized_path(&String::from_utf16_lossy(&path[..n as usize])),
+        })
     }
     fn check(&self, h: HANDLE, id: &Identity) -> NativeResult<()> {
-        if id.pid <= 4 || id.created == 0 { return Err(Fault::new(FaultKind::Denied, "System or unidentified process.")); }
-        if id.session_id != self.session { return Err(Fault::new(FaultKind::Denied, "Different Windows session.")); }
-        if token_sid(h)? != self.sid { return Err(Fault::new(FaultKind::Denied, "Different user or system account.")); }
+        if id.pid <= 4 || id.created == 0 {
+            return Err(Fault::new(
+                FaultKind::Denied,
+                "System or unidentified process.",
+            ));
+        }
+        if id.session_id != self.session {
+            return Err(Fault::new(FaultKind::Denied, "Different Windows session."));
+        }
+        if token_sid(h)? != self.sid {
+            return Err(Fault::new(
+                FaultKind::Denied,
+                "Different user or system account.",
+            ));
+        }
         let path = policy::normalized_path(&id.path);
         let name = path.rsplit('\\').next().unwrap_or("");
-        if path == self.self_path || policy::reserved_name(name) { return Err(Fault::new(FaultKind::Denied, "Protected system, game-support, voice or optimizer application.")); }
-        if path.starts_with(&(self.windows_path.clone() + "\\")) { return Err(Fault::new(FaultKind::Denied, "Windows component: protected.")); }
+        if path == self.self_path || policy::reserved_name(name) {
+            return Err(Fault::new(
+                FaultKind::Denied,
+                "Protected system, game-support, voice or optimizer application.",
+            ));
+        }
+        if path.starts_with(&(self.windows_path.clone() + "\\")) {
+            return Err(Fault::new(
+                FaultKind::Denied,
+                "Windows component: protected.",
+            ));
+        }
         let mut critical = 0;
-        if unsafe { IsProcessCritical(h, &mut critical) } == 0 { return Err(last_fault("Cannot establish critical-process status")); }
-        if critical != 0 { return Err(Fault::new(FaultKind::Denied, "Critical Windows process.")); }
+        if unsafe { IsProcessCritical(h, &mut critical) } == 0 {
+            return Err(last_fault("Cannot establish critical-process status"));
+        }
+        if critical != 0 {
+            return Err(Fault::new(FaultKind::Denied, "Critical Windows process."));
+        }
         Ok(())
     }
 }
@@ -139,21 +271,44 @@ impl Safety {
 pub fn enumerate() -> NativeResult<Vec<ProcessRow>> {
     let safety = Safety::new()?;
     let snapshot = Handle(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) });
-    if snapshot.0 == INVALID_HANDLE_VALUE { return Err(last_fault("Process snapshot")); }
+    if snapshot.0 == INVALID_HANDLE_VALUE {
+        return Err(last_fault("Process snapshot"));
+    }
     let mut entry: PROCESSENTRY32W = unsafe { zeroed() };
     entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
     let mut rows = Vec::new();
     let mut ok = unsafe { Process32FirstW(snapshot.0, &mut entry) };
     while ok != 0 {
-        let n = entry.szExeFile.iter().position(|c| *c == 0).unwrap_or(entry.szExeFile.len());
+        let n = entry
+            .szExeFile
+            .iter()
+            .position(|c| *c == 0)
+            .unwrap_or(entry.szExeFile.len());
         let name = String::from_utf16_lossy(&entry.szExeFile[..n]);
-        let inspected = open(entry.th32ProcessID, PROCESS_QUERY_LIMITED_INFORMATION).and_then(|h| {
-            let id = identity_from_handle(h.0, entry.th32ProcessID)?;
-            let reason = safety.check(h.0, &id).err().map(|e| e.message);
-            Ok((id, reason))
+        let inspected =
+            open(entry.th32ProcessID, PROCESS_QUERY_LIMITED_INFORMATION).and_then(|h| {
+                let id = identity_from_handle(h.0, entry.th32ProcessID)?;
+                let reason = safety.check(h.0, &id).err().map(|e| e.message);
+                Ok((id, reason))
+            });
+        let (id, reason) = inspected.unwrap_or_else(|e| {
+            (
+                Identity {
+                    pid: entry.th32ProcessID,
+                    created: 0,
+                    path: String::new(),
+                    session_id: u32::MAX,
+                },
+                Some(format!("Unavailable/protected: {}", e.message)),
+            )
         });
-        let (id, reason) = inspected.unwrap_or_else(|e| (Identity { pid: entry.th32ProcessID, created: 0, path: String::new(), session_id: u32::MAX }, Some(format!("Unavailable/protected: {}", e.message))));
-        rows.push(ProcessRow { identity: id, parent_pid: entry.th32ParentProcessID, name, protected_reason: reason, gpu: vec![] });
+        rows.push(ProcessRow {
+            identity: id,
+            parent_pid: entry.th32ParentProcessID,
+            name,
+            protected_reason: reason,
+            gpu: vec![],
+        });
         ok = unsafe { Process32NextW(snapshot.0, &mut entry) };
     }
     Ok(rows)
@@ -168,27 +323,59 @@ pub struct WindowsBackend {
 }
 
 impl WindowsBackend {
-    pub fn new(game: Option<Identity>, protected_paths: Vec<String>, cancel: Option<Arc<AtomicBool>>) -> NativeResult<Self> {
+    pub fn new(
+        game: Option<Identity>,
+        protected_paths: Vec<String>,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> NativeResult<Self> {
         let rows = enumerate()?;
-        let guarded = game.as_ref().map(|g| policy::guarded_pids(&rows, g)).unwrap_or_default();
-        Ok(Self { safety: Safety::new()?, protected_paths, guarded, game, cancel })
+        let guarded = game
+            .as_ref()
+            .map(|g| policy::guarded_pids(&rows, g))
+            .unwrap_or_default();
+        Ok(Self {
+            safety: Safety::new()?,
+            protected_paths,
+            guarded,
+            game,
+            cancel,
+        })
     }
     fn checked(&self, id: &Identity, rights: u32) -> NativeResult<Handle> {
         let h = exact_handle(id, rights)?;
         self.safety.check(h.0, id)?;
-        if self.guarded.contains(&id.pid) || self.protected_paths.iter().any(|p| policy::normalized_path(p) == policy::normalized_path(&id.path)) {
-            return Err(Fault::new(FaultKind::Denied, "Game family or user-protected executable."));
+        if self.guarded.contains(&id.pid)
+            || self
+                .protected_paths
+                .iter()
+                .any(|p| policy::normalized_path(p) == policy::normalized_path(&id.path))
+        {
+            return Err(Fault::new(
+                FaultKind::Denied,
+                "Game family or user-protected executable.",
+            ));
         }
         Ok(h)
     }
     fn cancelled(&self) -> bool {
-        self.cancel.as_ref().is_some_and(|v| v.load(Ordering::Relaxed)) || self.game.as_ref().is_some_and(|g| !matches!(alive(g), Ok(true)))
+        self.cancel
+            .as_ref()
+            .is_some_and(|v| v.load(Ordering::Relaxed))
+            || self
+                .game
+                .as_ref()
+                .is_some_and(|g| !matches!(alive(g), Ok(true)))
     }
 }
 
 impl Backend for WindowsBackend {
     fn authorize(&mut self, id: &Identity) -> NativeResult<()> {
-        if self.cancelled() { return Err(Fault::new(FaultKind::Denied, "Session cancelled or game no longer running.")); }
+        if self.cancelled() {
+            return Err(Fault::new(
+                FaultKind::Denied,
+                "Session cancelled or game no longer running.",
+            ));
+        }
         self.checked(id, 0).map(|_| ())
     }
     fn read(&mut self, id: &Identity, property: Property) -> NativeResult<Value> {
@@ -197,22 +384,58 @@ impl Backend for WindowsBackend {
             Property::GpuPriority => {
                 let mut value = 0;
                 let status = unsafe { D3DKMTGetProcessSchedulingPriorityClass(h.0, &mut value) };
-                if status != 0 || !(0..=5).contains(&value) { return Err(Fault::new(FaultKind::Unsupported, format!("GPU scheduling query unavailable (NTSTATUS {status:#x})."))); }
+                if status != 0 || !(0..=5).contains(&value) {
+                    return Err(Fault::new(
+                        FaultKind::Unsupported,
+                        format!("GPU scheduling query unavailable (NTSTATUS {status:#x})."),
+                    ));
+                }
                 Ok(Value::GpuPriority(value))
             }
             Property::CpuPriority => {
                 let value = unsafe { GetPriorityClass(h.0) };
-                if value == 0 { return Err(last_fault("GetPriorityClass")); }
+                if value == 0 {
+                    return Err(last_fault("GetPriorityClass"));
+                }
                 Ok(Value::CpuPriority(value))
             }
             Property::EcoQos => {
-                let mut value = PROCESS_POWER_THROTTLING_STATE { Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION, ControlMask: 0, StateMask: 0 };
-                if unsafe { GetProcessInformation(h.0, ProcessPowerThrottling, (&mut value as *mut PROCESS_POWER_THROTTLING_STATE).cast(), size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32) } == 0 { return Err(last_fault("EcoQoS query unsupported or denied; left untouched")); }
-                Ok(Value::EcoQos { control: value.ControlMask, state: value.StateMask })
+                let mut value = PROCESS_POWER_THROTTLING_STATE {
+                    Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+                    ControlMask: 0,
+                    StateMask: 0,
+                };
+                if unsafe {
+                    GetProcessInformation(
+                        h.0,
+                        ProcessPowerThrottling,
+                        (&mut value as *mut PROCESS_POWER_THROTTLING_STATE).cast(),
+                        size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+                    )
+                } == 0
+                {
+                    return Err(last_fault(
+                        "EcoQoS query unsupported or denied; left untouched",
+                    ));
+                }
+                Ok(Value::EcoQos {
+                    control: value.ControlMask,
+                    state: value.StateMask,
+                })
             }
             Property::MemoryPriority => {
                 let mut value = MEMORY_PRIORITY_INFORMATION { MemoryPriority: 0 };
-                if unsafe { GetProcessInformation(h.0, ProcessMemoryPriority, (&mut value as *mut MEMORY_PRIORITY_INFORMATION).cast(), size_of::<MEMORY_PRIORITY_INFORMATION>() as u32) } == 0 { return Err(last_fault("Memory priority query")); }
+                if unsafe {
+                    GetProcessInformation(
+                        h.0,
+                        ProcessMemoryPriority,
+                        (&mut value as *mut MEMORY_PRIORITY_INFORMATION).cast(),
+                        size_of::<MEMORY_PRIORITY_INFORMATION>() as u32,
+                    )
+                } == 0
+                {
+                    return Err(last_fault("Memory priority query"));
+                }
                 Ok(Value::MemoryPriority(value.MemoryPriority))
             }
         }
@@ -221,44 +444,94 @@ impl Backend for WindowsBackend {
         let h = self.checked(id, PROCESS_SET_INFORMATION)?;
         let ok = match *value {
             Value::GpuPriority(priority) => {
-                if !(0..=5).contains(&priority) { return Err(Fault::new(FaultKind::Other, "Invalid GPU priority in journal.")); }
+                if !(0..=5).contains(&priority) {
+                    return Err(Fault::new(
+                        FaultKind::Other,
+                        "Invalid GPU priority in journal.",
+                    ));
+                }
                 let status = unsafe { D3DKMTSetProcessSchedulingPriorityClass(h.0, priority) };
-                if status != 0 { return Err(Fault::new(FaultKind::Unsupported, format!("GPU priority setter unavailable (NTSTATUS {status:#x})."))); }
+                if status != 0 {
+                    return Err(Fault::new(
+                        FaultKind::Unsupported,
+                        format!("GPU priority setter unavailable (NTSTATUS {status:#x})."),
+                    ));
+                }
                 1
             }
             Value::CpuPriority(priority) => unsafe { SetPriorityClass(h.0, priority) },
             Value::EcoQos { control, state } => {
-                let v = PROCESS_POWER_THROTTLING_STATE { Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION, ControlMask: control, StateMask: state };
-                unsafe { SetProcessInformation(h.0, ProcessPowerThrottling, (&v as *const PROCESS_POWER_THROTTLING_STATE).cast(), size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32) }
+                let v = PROCESS_POWER_THROTTLING_STATE {
+                    Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+                    ControlMask: control,
+                    StateMask: state,
+                };
+                unsafe {
+                    SetProcessInformation(
+                        h.0,
+                        ProcessPowerThrottling,
+                        (&v as *const PROCESS_POWER_THROTTLING_STATE).cast(),
+                        size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+                    )
+                }
             }
             Value::MemoryPriority(priority) => {
-                let v = MEMORY_PRIORITY_INFORMATION { MemoryPriority: priority };
-                unsafe { SetProcessInformation(h.0, ProcessMemoryPriority, (&v as *const MEMORY_PRIORITY_INFORMATION).cast(), size_of::<MEMORY_PRIORITY_INFORMATION>() as u32) }
+                let v = MEMORY_PRIORITY_INFORMATION {
+                    MemoryPriority: priority,
+                };
+                unsafe {
+                    SetProcessInformation(
+                        h.0,
+                        ProcessMemoryPriority,
+                        (&v as *const MEMORY_PRIORITY_INFORMATION).cast(),
+                        size_of::<MEMORY_PRIORITY_INFORMATION>() as u32,
+                    )
+                }
             }
         };
-        if ok == 0 { return Err(last_fault("Priority write")); }
+        if ok == 0 {
+            return Err(last_fault("Priority write"));
+        }
         Ok(())
     }
     fn close(&mut self, id: &Identity, force: bool, timeout_ms: u32) -> NativeResult<CloseState> {
         self.authorize(id)?;
         let h = self.checked(id, 0)?;
-        struct Context { pid: u32, count: u32 }
+        struct Context {
+            pid: u32,
+            count: u32,
+        }
         unsafe extern "system" fn callback(window: HWND, data: LPARAM) -> i32 {
             let ctx = &mut *(data as *mut Context);
             let mut pid = 0;
             GetWindowThreadProcessId(window, &mut pid);
-            if pid == ctx.pid && PostMessageW(window, WM_CLOSE, 0, 0) != 0 { ctx.count += 1; }
+            if pid == ctx.pid && PostMessageW(window, WM_CLOSE, 0, 0) != 0 {
+                ctx.count += 1;
+            }
             1
         }
-        let mut context = Context { pid: id.pid, count: 0 };
-        unsafe { EnumWindows(Some(callback), (&mut context as *mut Context) as LPARAM); }
+        let mut context = Context {
+            pid: id.pid,
+            count: 0,
+        };
+        unsafe {
+            EnumWindows(Some(callback), (&mut context as *mut Context) as LPARAM);
+        }
         let deadline = Instant::now() + Duration::from_millis(u64::from(timeout_ms));
         while Instant::now() < deadline {
-            if unsafe { WaitForSingleObject(h.0, 100) } == WAIT_OBJECT_0 { return Ok(CloseState::ClosedGracefully); }
-            if self.cancelled() { return Ok(CloseState::KeptOpen); }
-            if context.count == 0 && !force { return Ok(CloseState::KeptOpen); }
+            if unsafe { WaitForSingleObject(h.0, 100) } == WAIT_OBJECT_0 {
+                return Ok(CloseState::ClosedGracefully);
+            }
+            if self.cancelled() {
+                return Ok(CloseState::KeptOpen);
+            }
+            if context.count == 0 && !force {
+                return Ok(CloseState::KeptOpen);
+            }
         }
-        if !force || self.cancelled() { return Ok(CloseState::KeptOpen); }
+        if !force || self.cancelled() {
+            return Ok(CloseState::KeptOpen);
+        }
         // Open and revalidate the SAME process again before escalation. No tree kill.
         self.authorize(id)?;
         let terminate = match self.checked(id, PROCESS_TERMINATE) {
@@ -266,8 +539,15 @@ impl Backend for WindowsBackend {
             Err(e) if e.kind == FaultKind::Gone => return Ok(CloseState::AlreadyGone),
             Err(e) => return Err(e),
         };
-        if unsafe { TerminateProcess(terminate.0, 1) } == 0 { return Err(last_fault("TerminateProcess")); }
-        if unsafe { WaitForSingleObject(terminate.0, 3000) } != WAIT_OBJECT_0 { return Err(Fault::new(FaultKind::Other, "Termination requested but process exit was not confirmed.")); }
+        if unsafe { TerminateProcess(terminate.0, 1) } == 0 {
+            return Err(last_fault("TerminateProcess"));
+        }
+        if unsafe { WaitForSingleObject(terminate.0, 3000) } != WAIT_OBJECT_0 {
+            return Err(Fault::new(
+                FaultKind::Other,
+                "Termination requested but process exit was not confirmed.",
+            ));
+        }
         Ok(CloseState::Terminated)
     }
 }
@@ -275,14 +555,28 @@ impl Backend for WindowsBackend {
 pub struct SessionLock(Handle);
 impl SessionLock {
     pub fn acquire() -> AppResult<Self> {
-        let name = wide(&format!("Local\\ProcessOptimizer.Session.{}", current_sid().map_err(|e| e.message)?));
+        let name = wide(&format!(
+            "Local\\ProcessOptimizer.Session.{}",
+            current_sid().map_err(|e| e.message)?
+        ));
         let h = Handle(unsafe { CreateMutexW(null(), 0, name.as_ptr()) });
-        if h.0.is_null() { return Err(last_fault("Session mutex").message); }
+        if h.0.is_null() {
+            return Err(last_fault("Session mutex").message);
+        }
         match unsafe { WaitForSingleObject(h.0, 0) } {
             WAIT_OBJECT_0 | WAIT_ABANDONED => Ok(Self(h)),
-            WAIT_TIMEOUT => Err("The session worker is still running. Use Restore now to request a safe stop.".into()),
+            WAIT_TIMEOUT => Err(
+                "The session worker is still running. Use Restore now to request a safe stop."
+                    .into(),
+            ),
             _ => Err(last_fault("Session mutex wait").message),
         }
     }
 }
-impl Drop for SessionLock { fn drop(&mut self) { unsafe { ReleaseMutex(self.0.0); } } }
+impl Drop for SessionLock {
+    fn drop(&mut self) {
+        unsafe {
+            ReleaseMutex(self.0 .0);
+        }
+    }
+}
