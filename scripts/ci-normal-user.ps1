@@ -29,10 +29,9 @@ $env:TEMP = Join-Path $PSScriptRoot 'temp'
 $env:TMP = $env:TEMP
 New-Item -ItemType Directory -Force $env:TEMP | Out-Null
 Set-Location $PSScriptRoot
-& .\worker-e2e.exe --ignored --nocapture --test-threads=1 *> .\result.log
-$code = $LASTEXITCODE
-Set-Content -Path .\exit-code.txt -Value $code
-exit $code
+$test = Start-Process -FilePath .\worker-e2e.exe -ArgumentList @('--ignored','--nocapture','--test-threads=1') -RedirectStandardOutput .\result.log -RedirectStandardError .\error.log -Wait -PassThru
+Set-Content -Path .\exit-code.txt -Value $test.ExitCode
+exit $test.ExitCode
 '@
     $runner | Set-Content (Join-Path $stage 'run.ps1') -Encoding utf8
     $credential = [pscredential]::new("$env:COMPUTERNAME\$name", $secret)
@@ -40,10 +39,12 @@ exit $code
         -Credential $credential -LoadUserProfile -WorkingDirectory $stage `
         -ArgumentList @('-NoProfile','-NonInteractive','-File',"`"$(Join-Path $stage 'run.ps1')`"") -PassThru
     if (-not $process.WaitForExit(180000)) { $process.Kill(); throw 'Isolated worker tests timed out.' }
-    $log = Join-Path $stage 'result.log'
     # These logs contain only owned test fixtures, never a real user inventory.
-    if (Test-Path $log) {
-        Get-Content $log | ForEach-Object { $_.Replace($stage, '<isolated-fixture>') } | Write-Host
+    foreach ($leaf in @('result.log','error.log')) {
+        $log = Join-Path $stage $leaf
+        if (Test-Path $log) {
+            Get-Content $log | ForEach-Object { $_.Replace($stage, '<isolated-fixture>') } | Write-Host
+        }
     }
     $codeFile = Join-Path $stage 'exit-code.txt'
     if (-not (Test-Path $codeFile) -or (Get-Content $codeFile -Raw).Trim() -ne '0') {

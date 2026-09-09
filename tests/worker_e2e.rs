@@ -44,7 +44,10 @@ struct Harness {
 
 impl Harness {
     fn new() -> Self {
-        assert_eq!(std::env::var("OPTIMIZER_ALLOW_WORKER_E2E").as_deref(), Ok("1"));
+        assert_eq!(
+            std::env::var("OPTIMIZER_ALLOW_WORKER_E2E").as_deref(),
+            Ok("1")
+        );
         assert!(
             !process::is_elevated().unwrap(),
             "Run unelevated, without a production safety bypass."
@@ -137,7 +140,10 @@ impl Harness {
                     s.events
                 );
             }
-            assert!(Instant::now() < deadline, "timeout waiting for {expected:?}");
+            assert!(
+                Instant::now() < deadline,
+                "timeout waiting for {expected:?}"
+            );
             thread::sleep(Duration::from_millis(50));
         }
     }
