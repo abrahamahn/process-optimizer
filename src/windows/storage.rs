@@ -105,6 +105,10 @@ pub fn secure_directory(path: &Path) -> AppResult<()> {
 }
 
 pub fn verify_store_entries(path: &Path) -> AppResult<()> {
+    let directory = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if !directory.is_dir() || directory.file_attributes() & 0x400 != 0 {
+        return Err("Recovery directory changed to a reparse or non-directory entry.".into());
+    }
     for name in [
         "state.sqlite3",
         "state.sqlite3-wal",

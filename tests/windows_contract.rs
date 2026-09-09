@@ -49,7 +49,11 @@ fn session(target: Identity, action: ActionKind) -> Session {
         format!("test-{}", target.pid),
         Plan {
             game_path: r"C:\TestOnly\NotAnActualGame.exe".into(),
-            game: None,
+            game: Some(Identity {
+                pid: 99,
+                path: r"C:\TestOnly\NotAnActualGame.exe".into(),
+                ..target.clone()
+            }),
             actions: vec![ApprovedAction { target, action }],
             protected_paths: vec![],
             options: Options {
@@ -184,4 +188,16 @@ fn sqlite_durable_record_can_be_reopened() {
         assert_eq!(db.active().unwrap().unwrap().stage, Stage::RecoveryNeeded);
     }
     let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn cancellation_is_rechecked_inside_the_native_setter() {
+    use std::sync::{atomic::AtomicBool, Arc};
+    let fixture = Fixture::start(false);
+    let id = fixture.identity();
+    let mut backend =
+        WindowsBackend::new(None, vec![], Some(Arc::new(AtomicBool::new(true)))).unwrap();
+    let original = backend.read(&id, Property::CpuPriority).unwrap();
+    assert!(backend.write(&id, &original.background()).is_err());
+    assert_eq!(backend.read(&id, Property::CpuPriority).unwrap(), original);
 }

@@ -41,7 +41,7 @@ J-03: Enforce at most one unfinished session with a database constraint as well 
 
 J-04: Restrict the state directory and files to the user/system as needed. Do not use an elevated process to follow user-controlled journal paths. Reject reparse/link/remote-path ambiguity where inspected. Bounded request size is 256 KiB; maximum 32 action entries. Logs are local and contain only necessary identity/settings, not command lines, window titles or document content.
 
-J-05: Disk full, read-only store, unknown schema, corrupt JSON or corrupt database prevents new mutations. Preserve problematic records; never delete them or guess defaults to make the UI look clean. No schema downgrade. Normal retention may prune old completed records, never unresolved records.
+J-05: Disk full, read-only store, unknown schema, corrupt JSON or corrupt database prevents new mutations. Validate recovery targets and enabled properties against the immutable original approval before native inspection or writes. Reject duplicate actions/properties, invalid native values, rewritten original values, removed recovery evidence and false completed states. Structural validation does not make a same-user local log tamper-proof. Preserve problematic records; never delete them or guess defaults to make the UI look clean. No schema downgrade. Normal retention may prune old completed records, never unresolved records.
 
 ## Session state machine
 
@@ -67,7 +67,7 @@ S-05: Closing/crashing the UI does not kill the controller. If the controller di
 
 ## Action phases and write-ahead application
 
-Logical action phases are Planned, Intent, Applied, NoChange, Closed, ClosePending, Failed, Indeterminate, RestoreIntent, Restored, Gone, Conflict and ManualReview. Readable messages explain the exact outcome. Close/force and settings have different recovery categories.
+Logical action phases are Planned, Intent, Applied, NoChange, NotApplied, NotRequested, Closed, ClosePending, Failed, Indeterminate, RestoreIntent, Restored, Gone, Conflict and ManualReview. Readable messages explain the exact outcome. Close/force and settings have different recovery categories.
 
 W-01: Preflight the entire finite plan: game identity, target identities/protection, consent, valid operations, duplicate/conflicting actions and size bounds. A malformed or unauthorized plan is rejected before recording external mutation intent.
 
@@ -77,9 +77,9 @@ W-03: Durably persist Intent with original and desired values before the externa
 
 W-04: Revalidate held target/protection and relevant state, perform one bounded operation, then verify observable state. Persist completion separately. A setter error may still leave an uncertain state; use the already durable intent as the recovery anchor.
 
-W-05: If the completion write fails, stop further application and preserve/reconcile from the last durable record. Never erase the prior intent. Failure isolation during recovery must not falsely mark still-pending work completed.
+W-05: If a setter, its verification or its completion write fails, stop further application and preserve/reconcile from the last durable record. A close call returning an error may have delivered a request: retain an uncertain close intent, stop new optimization and never replay the close. Never erase the prior intent. Failure isolation during recovery must not falsely mark still-pending work completed.
 
-W-06: NoChange requires no restoration write. Lowering policies must not raise an already lower value. A Close request is recorded before sending; only signaled process exit permits Closed. Otherwise ClosePending/Failed/Indeterminate accurately describes the evidence.
+W-06: NoChange requires no restoration write. When cancellation, revoked authorization or changed original state is detected after persisting intent but before our external call, durably record NotApplied (setting) or NotRequested (close). Those records never confer restoration ownership, even if another tool later independently chooses our intended value. If recording this fact itself fails or the controller crashes first, retain the preceding uncertain intent; do not invent certainty. Lowering policies must not raise an already lower value. A Close request is recorded before sending; only signaled process exit permits Closed. Otherwise ClosePending/Failed/Indeterminate accurately describes the evidence.
 
 ## Restoration table
 
@@ -87,8 +87,10 @@ Stop optimization first. Restore actions in reverse dependency/order, continuing
 
 | Observation for a reversible action | Required outcome |
 | --- | --- |
+| Durable NotApplied or NotRequested | No native recovery write or close request; we did not perform that action |
 | Same lifetime; current equals original | Already original/restored; no write |
-| Same lifetime; current equals our verified applied value | Restore exact original; verify and record |
+| Same lifetime; current equals our verified applied value, with no earlier external conflict | Save restore intent, recheck current value, then restore exact original; verify and record |
+| An external ownership conflict was previously observed | Never regain write permission merely because current value again matches our old value; retain conflict unless already original or target gone |
 | Only apply intent survived; current equals recorded desired value | Reconcile conservatively from durable intent, restore original if all identity/value checks hold; record inferred outcome |
 | Current differs from original and our applied/desired value | Conflict; preserve external change |
 | PID disappeared or another lifetime now occupies it | Gone; no write to replacement |
