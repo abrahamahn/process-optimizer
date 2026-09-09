@@ -29,6 +29,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Owner-draw ABI fix failed' }
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.90.0 --profile minimal --component clippy --component rustfmt
+      - name: Prepare disposable current-user startup fixture parent
+        shell: pwsh
+        run: New-Item -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Force | Out-Null
       - name: Format and test
         shell: pwsh
         run: |
