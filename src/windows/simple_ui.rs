@@ -398,6 +398,13 @@ impl State {
         } else {
             "No supported startup entry"
         };
+        let (category, guidance) = if c.essential {
+            ("Windows / core", "Required; do not change")
+        } else if c.protected {
+            ("Protected app", "Kept outside optimizer actions")
+        } else {
+            describe(&c.name)
+        };
         let safety = if c.essential {
             "ESSENTIAL — KEEP. This Windows/core process is never an optimization target."
         } else if c.protected {
@@ -408,8 +415,10 @@ impl State {
         self.text(
             DETAIL,
             &format!(
-                "{} Current: Game Mode = {}; Windows startup = {}. Recommended: {}. Turn OFF restores any priority changes already applied.",
+                "{} {}: {}. Current: Game Mode = {}; Startup = {}. Recommended: {}. Turn OFF restores priority changes already applied.",
                 safety,
+                category,
+                guidance,
                 game,
                 startup,
                 recommendation(c)
@@ -803,6 +812,10 @@ impl State {
         });
     }
     fn populate(&mut self) {
+        let selected_path = self
+            .selected_index()
+            .and_then(|i| self.choices.get(i))
+            .map(|c| c.path.clone());
         let startup_entries = startup::entries().unwrap_or_default();
         let mut choices = BTreeMap::new();
         for row in &self.snapshot.processes {
@@ -907,12 +920,12 @@ impl State {
                     }
                 })
                 .unwrap_or("Keep");
-            let (category, hint) = if c.essential {
-                ("Windows / core", "Required; do not change")
+            let category = if c.essential {
+                "Windows / core"
             } else if c.protected {
-                ("Protected app", "Kept outside optimizer actions")
+                "Protected app"
             } else {
-                describe(&c.name)
+                describe(&c.name).0
             };
             let value = c.gpu.map(|v| format!(" | GPU {v:.1}%")).unwrap_or_default();
             let startup = if c.startup_disabled {
@@ -930,15 +943,14 @@ impl State {
                 "OPTIONAL"
             };
             let line = format!(
-                "{} | {} — {} | Game: {} | Startup: {} | RECOMMENDED: {}{} | {}{}",
+                "{} | {} — {} | Game: {} | Startup: {} | RECOMMENDED: {}{}{}",
                 safety,
                 c.name,
                 category,
                 game,
                 startup,
                 recommendation(c),
-                if c.id.is_none() { " | not running" } else { "" },
-                hint,
+                if c.id.is_none() { " | Not running" } else { "" },
                 value
             );
             unsafe {
@@ -951,11 +963,15 @@ impl State {
             }
         }
         unsafe {
-            SendMessageW(self.h(APPS), LB_SETHORIZONTALEXTENT, 1500, 0);
+            SendMessageW(self.h(APPS), LB_SETHORIZONTALEXTENT, 1200, 0);
             SendMessageW(self.h(APPS), WM_SETREDRAW, 1, 0);
             InvalidateRect(self.h(APPS), null(), 1);
             if !self.choices.is_empty() {
-                SendMessageW(self.h(APPS), LB_SETCURSEL, 0, 0);
+                let selected = selected_path
+                    .as_ref()
+                    .and_then(|path| self.choices.iter().position(|c| &c.path == path))
+                    .unwrap_or(0);
+                SendMessageW(self.h(APPS), LB_SETCURSEL, selected, 0);
             }
         }
         self.text(
@@ -1466,7 +1482,18 @@ unsafe extern "system" fn proc(window: HWND, msg: u32, w: WPARAM, l: LPARAM) -> 
                         s.sync_selected_controls(idle);
                         return 0;
                     }
-                    if let Err(e) = s.command(id) {
+                    let result = s.command(id);
+                    if matches!(
+                        id,
+                        KEEP | REDUCE | ALLOW_CLOSE | RESTORE_STARTUP | PERMANENT
+                    ) {
+                        let idle = runner::database()
+                            .and_then(|db| db.active())
+                            .map(|active| active.is_none())
+                            .unwrap_or(false);
+                        s.sync_selected_controls(idle);
+                    }
+                    if let Err(e) = result {
                         info(window, &e);
                     }
                     return 0;
