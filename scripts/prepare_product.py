@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import lzma
+import runpy
 
 encoded = ''.join(Path(f'scripts/product-part-{n}.txt').read_text(encoding='utf-8') for n in range(5))
 payload = base64.b64decode(encoded, validate=True)
@@ -41,4 +42,5 @@ new = '''            if info.Level != 1 { false } else {
             }'''
 assert s.count(old) == 1, 'Unexpected native union access'
 p.write_text(s.replace(old, new), encoding='utf-8', newline='\n')
-print(f'Applied {len(prepared)} checksum-verified source changes.')
+runpy.run_path('scripts/product_followup.py')
+print(f'Applied {len(prepared)} checksum-verified source changes and reviewed follow-up.')
