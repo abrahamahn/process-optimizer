@@ -359,8 +359,16 @@ impl State {
             return;
         };
         let c = &self.choices[i];
-        let rule = self.config.rules.iter().find(|r| r.app.path == c.path);
-        let rule = rule.filter(|r| r.active(native::now()));
+        let configured_rule = self.config.rules.iter().find(|r| r.app.path == c.path);
+        let rule = configured_rule.filter(|r| r.active(native::now()));
+        self.text(
+            RESTORE_STARTUP,
+            if c.startup_disabled {
+                "Restore startup"
+            } else {
+                "Keep startup"
+            },
+        );
         self.check(KEEP, rule.is_none());
         self.check(
             REDUCE,
@@ -374,7 +382,9 @@ impl State {
         self.check(PERMANENT, c.startup_disabled);
 
         let can_game_change = idle && !c.protected && c.id.is_some();
-        self.enable(KEEP, idle);
+        // A protected/essential app is already a mandatory Keep. Only leave this
+        // control active if it can remove an older saved rule that is now blocked.
+        self.enable(KEEP, idle && (!c.protected || configured_rule.is_some()));
         self.enable(REDUCE, can_game_change);
         self.enable(ALLOW_CLOSE, can_game_change);
         self.enable(
@@ -555,7 +565,7 @@ impl State {
                 | LBS_HASSTRINGS as u32,
         )?;
         for (id, label) in [
-            (KEEP, "Keep"),
+            (KEEP, "Keep / exclude"),
             (REDUCE, "Lower priority"),
             (ALLOW_CLOSE, "Close"),
             (RESTORE_STARTUP, "Keep startup / restore"),
