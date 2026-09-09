@@ -132,6 +132,16 @@ impl Value {
         }
     }
 
+    /// Accepted values for the pinned native API contract, not arbitrary journal numbers.
+    pub fn valid(&self) -> bool {
+        match *self {
+            Self::GpuPriority(v) => (0..=5).contains(&v),
+            Self::CpuPriority(v) => matches!(v, 0x40 | 0x4000 | 0x20 | 0x8000 | 0x80 | 0x100),
+            Self::MemoryPriority(v) => (1..=5).contains(&v),
+            Self::EcoQos { control, state } => (control | state) & !5 == 0,
+        }
+    }
+
     /// Never raise a background application's existing priority.
     pub fn background(&self) -> Self {
         match *self {
@@ -157,15 +167,20 @@ pub enum ChangeState {
     ProcessGone,
     Conflict,
     UserKept,
+    NotApplied,
 }
 
 impl ChangeState {
     pub fn resolved(self) -> bool {
-        matches!(self, Self::Restored | Self::ProcessGone | Self::UserKept)
+        matches!(
+            self,
+            Self::Restored | Self::ProcessGone | Self::UserKept | Self::NotApplied
+        )
     }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Change {
     pub target: Identity,
     pub before: Value,
@@ -180,12 +195,14 @@ pub enum CloseState {
     ClosedGracefully,
     Terminated,
     KeptOpen,
+    NotRequested,
     RequestedPending,
     AlreadyGone,
     Failed,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CloseRecord {
     pub target: Identity,
     pub force_allowed: bool,
@@ -269,3 +286,12 @@ impl Fault {
 }
 
 pub type NativeResult<T> = Result<T, Fault>;
+
+#[cfg(test)]
+pub(crate) fn fixture_provenance() -> Option<Provenance> {
+    Some(Provenance {
+        owner_sid: "test-user".into(),
+        logon_id: 10,
+        image_file_id: "fixture-file".into(),
+    })
+}

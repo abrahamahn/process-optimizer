@@ -514,6 +514,12 @@ impl Backend for WindowsBackend {
                         "EcoQoS query unsupported or denied; left untouched",
                     ));
                 }
+                if value.Version != PROCESS_POWER_THROTTLING_CURRENT_VERSION {
+                    return Err(Fault::new(
+                        FaultKind::Unsupported,
+                        "Unknown EcoQoS structure version; left untouched.",
+                    ));
+                }
                 Ok(Value::EcoQos {
                     control: value.ControlMask,
                     state: value.StateMask,
@@ -537,6 +543,18 @@ impl Backend for WindowsBackend {
         }
     }
     fn write(&mut self, id: &Identity, value: &Value) -> NativeResult<()> {
+        if !value.valid() {
+            return Err(Fault::new(
+                FaultKind::Other,
+                "Invalid native policy value; no setter was called.",
+            ));
+        }
+        if self.cancelled() {
+            return Err(Fault::new(
+                FaultKind::Denied,
+                "Cancelled before native setter.",
+            ));
+        }
         let h = self.checked(id, PROCESS_SET_INFORMATION)?;
         let ok = match *value {
             Value::GpuPriority(priority) => {

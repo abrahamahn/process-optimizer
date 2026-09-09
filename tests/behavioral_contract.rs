@@ -32,7 +32,10 @@ fn session() -> Session {
         "contract".into(),
         Plan {
             game_path: r"C:\Game\game.exe".into(),
-            game: None,
+            game: Some(Identity {
+                path: r"C:\Game\game.exe".into(),
+                ..identity(99)
+            }),
             actions: vec![ApprovedAction {
                 target: identity(10),
                 action: ActionKind::LowerPriorities,
@@ -169,7 +172,7 @@ fn cancellation_after_durable_intent_prevents_setting_call() {
     assert_eq!(b.writes, 0);
     assert_eq!(
         j.saved.as_ref().unwrap().changes[0].state,
-        ChangeState::Prepared
+        ChangeState::NotApplied
     );
     j.cancel_at = None;
     engine::restore(&mut s, &mut b, &mut j).unwrap();
@@ -201,7 +204,8 @@ fn setting_drift_between_snapshot_and_write_is_preserved() {
     assert_eq!((b.writes, b.gpu), (0, 4));
     engine::restore(&mut s, &mut b, &mut j).unwrap();
     assert_eq!(b.gpu, 4);
-    assert_eq!(s.stage, Stage::RecoveryNeeded);
+    assert_eq!(s.stage, Stage::Restored);
+    assert_eq!(s.changes[0].state, ChangeState::NotApplied);
 }
 #[test]
 fn apply_cannot_replay_an_existing_session() {

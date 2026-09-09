@@ -89,6 +89,12 @@ The normal committed-source CI workflow additionally gates packaging on formatti
 
 Actual Windows 11/GPU/HAGS/driver API round trips; localized counters; real game/anti-cheat/controller/voice behavior; visual/accessibility interaction review; exhaustive process-crash and power-loss faults; optional adapters; signed installer/update behavior; and performance/overhead measurements below remain unverified or not implemented. No FPS uplift, VRAM recovery amount, physical input-latency improvement or overhead budget is claimed achieved.
 
+## Recovery ownership regression gate
+
+The recovery audit adds deterministic cases for: cancellation or external drift before a setter; another actor independently choosing our intended value; cancellation before any close request; journal-write failures at each apply/restore boundary; a competing writer between restore intent and the native call; persistent ownership conflicts; ambiguous setter/close results stopping later actions; invalid property values; changed approvals/original values; missing game/provenance; duplicate or out-of-plan recovery properties; and a falsely completed record.
+
+These cases use in-memory effects, not actual GPU performance. A separate Windows fixture test verifies cancellation inside the native setter without modifying any unrelated process. Results must be recorded from the completed run; adding a test file is not a pass.
+
 ## Benchmark protocol
 
 Use a pinned PresentMon build or another documented capture path and declare metric definitions. PresentMon presentation data is not automatically physical end-to-end input latency. [V1]

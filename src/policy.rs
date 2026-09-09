@@ -8,16 +8,53 @@ pub fn normalized_path(path: &str) -> String {
 }
 
 pub fn same_process(a: &Identity, b: &Identity) -> bool {
-    a.pid == b.pid
+    complete_identity(a)
+        && complete_identity(b)
+        && a.pid == b.pid
         && a.created == b.created
         && a.session_id == b.session_id
         && a.provenance == b.provenance
         && normalized_path(&a.path) == normalized_path(&b.path)
 }
 
+/// Shape validation is distinct from native ownership/critical-process authorization.
+pub fn complete_identity(id: &Identity) -> bool {
+    let path = normalized_path(&id.path);
+    let bytes = path.as_bytes();
+    id.pid > 4
+        && id.created != 0
+        && id.session_id != u32::MAX
+        && bytes.len() > 7
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && bytes[2] == b'\\'
+        && !path[2..].contains(':')
+        && !path.contains('\0')
+        && path.len() <= 32767
+        && path.ends_with(".exe")
+        && !path.split('\\').any(|p| p == "." || p == "..")
+        && id.provenance.as_ref().is_some_and(|p| {
+            !p.owner_sid.is_empty() && p.logon_id != 0 && !p.image_file_id.is_empty()
+        })
+}
+
 pub fn validate(plan: &Plan) -> AppResult<()> {
     if !plan.consent {
         return Err("Explicit session approval is required.".into());
+    }
+    let game = plan
+        .game
+        .as_ref()
+        .ok_or("Select the exact running game, not a path or launcher.")?;
+    if !complete_identity(game)
+        || reserved_name(
+            normalized_path(&game.path)
+                .rsplit('\\')
+                .next()
+                .unwrap_or(""),
+        )
+    {
+        return Err("The game requires complete lifetime and executable evidence.".into());
     }
     if plan.game_path.trim().is_empty() {
         return Err("Choose the actual game executable, not its launcher.".into());
@@ -51,8 +88,11 @@ pub fn validate(plan: &Plan) -> AppResult<()> {
     }
     let mut pids = HashSet::new();
     for item in &plan.actions {
-        if item.target.pid <= 4 || item.target.created == 0 || item.target.path.is_empty() {
+        if !complete_identity(&item.target) {
             return Err("A selected process has no trustworthy identity.".into());
+        }
+        if item.target.pid == game.pid {
+            return Err("The game PID cannot be an optimization target.".into());
         }
         let image = normalized_path(&item.target.path);
         if reserved_name(image.rsplit('\\').next().unwrap_or("")) {
@@ -201,13 +241,19 @@ mod tests {
             created: 100,
             path: format!(r"C:\Apps\{pid}.exe"),
             session_id: 1,
-            provenance: None,
+            provenance: fixture_provenance(),
         }
     }
     fn plan() -> Plan {
         Plan {
             game_path: r"C:\Game\game.exe".into(),
-            game: None,
+            game: Some(Identity {
+                pid: 99,
+                created: 100,
+                path: r"C:\Game\game.exe".into(),
+                session_id: 1,
+                provenance: fixture_provenance(),
+            }),
             actions: vec![],
             protected_paths: vec![],
             options: Options::default(),

@@ -155,7 +155,6 @@ pub fn run(id: &str) -> AppResult<()> {
         s.note(format!("Recovery worker error: {e}"));
         let _ = db.save(&s);
     }
-    export_report(&s).ok();
     result
 }
 
@@ -169,7 +168,7 @@ pub fn recover() -> AppResult<()> {
     s.worker = Some(process::current_identity().map_err(|e| e.message)?);
     let mut backend = WindowsBackend::new(None, vec![], None).map_err(|e| e.message)?;
     engine::restore(&mut s, &mut backend, &mut db)?;
-    export_report(&s)
+    Ok(())
 }
 
 /// Explicit user acknowledgement is not reported as successful restoration.
@@ -194,12 +193,7 @@ pub fn acknowledge() -> AppResult<()> {
     s.note("User accepted unresolved settings. This is not a fully restored session.");
     s.stage = Stage::UserAcknowledged;
     db.save(&s)?;
-    export_report(&s)
-}
-
-fn export_report(s: &Session) -> AppResult<()> {
-    let body = serde_json::to_string_pretty(s).map_err(|e| e.to_string())?;
-    std::fs::write(state_dir()?.join("last-session.json"), body).map_err(|e| e.to_string())
+    Ok(())
 }
 
 pub fn write_probe(path: &Path) -> AppResult<()> {

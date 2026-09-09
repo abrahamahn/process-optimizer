@@ -59,6 +59,9 @@ pub fn apply<B: Backend, J: Journal>(s: &mut Session, b: &mut B, j: &mut J) -> A
                             continue;
                         }
                     };
+                    if !before.valid() || before.property() != property {
+                        return Err("Invalid native getter value; no setter was called.".into());
+                    }
                     let desired = before.background();
                     if desired == before {
                         continue;
@@ -73,17 +76,22 @@ pub fn apply<B: Backend, J: Journal>(s: &mut Session, b: &mut B, j: &mut J) -> A
                     // This commit MUST succeed before touching the target process.
                     j.save(s)?;
                     let idx = s.changes.len() - 1;
-                    b.authorize(&action.target).map_err(|e| e.message)?;
+                    if let Err(e) = b.authorize(&action.target) {
+                        s.changes[idx].state = ChangeState::NotApplied;
+                        s.changes[idx].detail = format!("No setter was called: {}", e.message);
+                        j.save(s)?;
+                        return Err(e.message);
+                    }
                     // Observe external changes again immediately before writing. This is
                     // conservative comparison, not an atomic OS compare-and-swap.
-                    if b.read(&action.target, property).map_err(|e| e.message)?
-                        != s.changes[idx].before
-                    {
-                        s.changes[idx].state = ChangeState::Conflict;
-                        s.changes[idx].detail =
-                            "Value changed after approval; no setting was written.".into();
-                        j.save(s)?;
-                        return Err("A competing setting change invalidated the plan.".into());
+                    match b.read(&action.target, property) {
+                        Ok(current) if current == s.changes[idx].before => {}
+                        _ => {
+                            s.changes[idx].state = ChangeState::NotApplied;
+                            s.changes[idx].detail = "Original state changed or became unreadable; our setter was never called.".into();
+                            j.save(s)?;
+                            return Err("A target changed before mutation; recovery is limited to earlier applied actions.".into());
+                        }
                     }
                     match b.write(&action.target, &desired) {
                         Ok(()) => match b.read(&action.target, property) {
@@ -106,6 +114,9 @@ pub fn apply<B: Backend, J: Journal>(s: &mut Session, b: &mut B, j: &mut J) -> A
                         }
                     }
                     j.save(s)?;
+                    if s.changes[idx].state != ChangeState::Applied {
+                        return Err("Setting effect could not be verified; stopped further optimization and requested recovery.".into());
+                    }
                 }
             }
             ActionKind::Close | ActionKind::ForceClose => {
@@ -119,7 +130,12 @@ pub fn apply<B: Backend, J: Journal>(s: &mut Session, b: &mut B, j: &mut J) -> A
                 });
                 j.save(s)?;
                 let idx = s.closed.len() - 1;
-                b.authorize(&action.target).map_err(|e| e.message)?;
+                if let Err(e) = b.authorize(&action.target) {
+                    s.closed[idx].state = CloseState::NotRequested;
+                    s.closed[idx].detail = format!("No close request was sent: {}", e.message);
+                    j.save(s)?;
+                    return Err(e.message);
+                }
                 match b.close(&action.target, force, s.plan.options.close_timeout_ms) {
                     Ok(state) => {
                         s.closed[idx].detail =
@@ -127,11 +143,19 @@ pub fn apply<B: Backend, J: Journal>(s: &mut Session, b: &mut B, j: &mut J) -> A
                         s.closed[idx].state = state;
                     }
                     Err(e) => {
-                        s.closed[idx].state = CloseState::Failed;
-                        s.closed[idx].detail = e.message;
+                        s.closed[idx].state = CloseState::IntentRecorded;
+                        s.closed[idx].detail = format!(
+                            "Close call returned an error; its effect is unconfirmed: {}",
+                            e.message
+                        );
                     }
                 }
                 j.save(s)?;
+                if s.closed[idx].state == CloseState::IntentRecorded {
+                    return Err(
+                        "Unconfirmed close effect; no further target will be acted on.".into(),
+                    );
+                }
             }
         }
     }
@@ -141,6 +165,10 @@ pub fn apply<B: Backend, J: Journal>(s: &mut Session, b: &mut B, j: &mut J) -> A
 
 /// Idempotent, reverse-order compare-and-restore; never replays destructive actions.
 pub fn restore<B: Backend, J: Journal>(s: &mut Session, b: &mut B, j: &mut J) -> AppResult<()> {
+    crate::integrity::validate_record(s)?;
+    if s.stage.finished() {
+        return Ok(());
+    }
     s.stage = Stage::Restoring;
     j.save(s)?;
     for idx in (0..s.changes.len()).rev() {
@@ -161,9 +189,38 @@ pub fn restore<B: Backend, J: Journal>(s: &mut Session, b: &mut B, j: &mut J) ->
                 s.changes[idx].state = ChangeState::Restored;
                 s.changes[idx].detail = "Already at original value; no write needed.".into();
             }
+            Ok(_) if change.state == ChangeState::Conflict => {
+                s.changes[idx].detail = "Previously observed external ownership conflict; automatic write remains disabled.".into();
+            }
             Ok(current) if current == change.applied => {
                 s.changes[idx].state = ChangeState::RestorePrepared;
                 j.save(s)?;
+                // Persisting restore intent can yield to another writer; compare again.
+                match b.read(&change.target, change.before.property()) {
+                    Ok(v) if v == change.applied => {}
+                    Ok(v) if v == change.before => {
+                        s.changes[idx].state = ChangeState::Restored;
+                        s.changes[idx].detail =
+                            "Original value was restored by another actor; no write.".into();
+                        j.save(s)?;
+                        continue;
+                    }
+                    Ok(_) => {
+                        s.changes[idx].state = ChangeState::Conflict;
+                        s.changes[idx].detail =
+                            "External change after restore intent; no write.".into();
+                        j.save(s)?;
+                        continue;
+                    }
+                    Err(e) => {
+                        if e.kind == FaultKind::Gone {
+                            s.changes[idx].state = ChangeState::ProcessGone;
+                        }
+                        s.changes[idx].detail = format!("Restore recheck failed: {}", e.message);
+                        j.save(s)?;
+                        continue;
+                    }
+                }
                 match b.write(&change.target, &change.before) {
                     Ok(()) => match b.read(&change.target, change.before.property()) {
                         Ok(actual) if actual == change.before => {
@@ -282,11 +339,17 @@ mod tests {
             created: 100,
             path: r"C:\Apps\background.exe".into(),
             session_id: 1,
-            provenance: None,
+            provenance: fixture_provenance(),
         };
         let p = Plan {
             game_path: r"C:\Game\game.exe".into(),
-            game: None,
+            game: Some(Identity {
+                pid: 99,
+                created: 100,
+                path: r"C:\Game\game.exe".into(),
+                session_id: 1,
+                provenance: fixture_provenance(),
+            }),
             actions: vec![ApprovedAction { target: id, action }],
             protected_paths: vec![],
             options: Options {
@@ -395,7 +458,7 @@ mod tests {
     fn ambiguous_set_error_keeps_recovery_intent() {
         let (mut s, mut b, mut j) = setup(ActionKind::LowerPriorities);
         b.write_error_after_effect = true;
-        apply(&mut s, &mut b, &mut j).unwrap();
+        assert!(apply(&mut s, &mut b, &mut j).is_err());
         assert_eq!(s.changes[0].state, ChangeState::Prepared);
         b.write_error_after_effect = false;
         restore(&mut s, &mut b, &mut j).unwrap();

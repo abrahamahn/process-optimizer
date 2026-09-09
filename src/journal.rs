@@ -1,4 +1,4 @@
-use crate::model::*;
+use crate::{integrity, model::*};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use std::{path::Path, time::Duration};
 
@@ -29,7 +29,14 @@ impl Database {
     }
 
     pub fn create(&mut self, session: &Session) -> AppResult<()> {
-        let body = serde_json::to_string(session).map_err(|e| e.to_string())?;
+        integrity::validate_record(session)?;
+        if session.stage != Stage::Pending
+            || !session.changes.is_empty()
+            || !session.closed.is_empty()
+        {
+            return Err("Only a pristine pending session can be created.".into());
+        }
+        let body = integrity::encode(session)?;
         let t = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -54,7 +61,11 @@ impl Database {
             .connection
             .query_row("SELECT body FROM sessions WHERE id=?1", [id], |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        Self::decode(&body)
+        let session = Self::decode(&body)?;
+        if session.id != id {
+            return Err("Stored key and recovery ID disagree; preserve this record.".into());
+        }
+        Ok(session)
     }
 
     pub fn latest(&self) -> AppResult<Option<Session>> {
@@ -95,6 +106,7 @@ impl Database {
                     .into(),
             );
         }
+        integrity::validate_record(&session)?;
         Ok(session)
     }
 
@@ -133,9 +145,19 @@ impl Database {
 
 impl Journal for Database {
     fn save(&mut self, s: &Session) -> AppResult<()> {
-        let body = serde_json::to_string(s).map_err(|e| e.to_string())?;
-        let updated = self
+        let body = integrity::encode(s)?;
+        let t = self
             .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        let previous: String = t
+            .query_row("SELECT body FROM sessions WHERE id=?1", [&s.id], |r| {
+                r.get(0)
+            })
+            .map_err(|e| e.to_string())?;
+        let previous = Self::decode(&previous)?;
+        integrity::validate_update(&previous, s)?;
+        let updated = t
             .execute(
                 "UPDATE sessions SET body=?1, finished=?2 WHERE id=?3",
                 params![body, s.stage.finished() as i32, s.id],
@@ -144,7 +166,7 @@ impl Journal for Database {
         if updated != 1 {
             return Err("Recovery record disappeared; refusing further changes.".into());
         }
-        Ok(())
+        t.commit().map_err(|e| e.to_string())
     }
 }
 
@@ -155,8 +177,14 @@ mod tests {
         Session::new(
             id.into(),
             Plan {
-                game_path: "game.exe".into(),
-                game: None,
+                game_path: r"C:\Game\game.exe".into(),
+                game: Some(Identity {
+                    pid: 99,
+                    created: 100,
+                    path: r"C:\Game\game.exe".into(),
+                    session_id: 1,
+                    provenance: fixture_provenance(),
+                }),
                 actions: vec![],
                 protected_paths: vec![],
                 options: Options::default(),
@@ -215,7 +243,6 @@ mod tests {
         let mut db = Database::open(Path::new(":memory:")).unwrap();
         let mut s = session("a");
         s.schema = 999;
-        db.create(&s).unwrap();
-        assert!(db.active().is_err());
+        assert!(db.create(&s).is_err());
     }
 }
