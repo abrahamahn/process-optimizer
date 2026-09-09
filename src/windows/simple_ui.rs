@@ -70,6 +70,22 @@ const ES_MULTILINE_STYLE: u32 = 0x0004;
 const ES_AUTOVSCROLL_STYLE: u32 = 0x0040;
 const ES_AUTOHSCROLL_STYLE: u32 = 0x0080;
 const ES_READONLY_STYLE: u32 = 0x0800;
+const LBS_OWNERDRAWFIXED_STYLE: u32 = 0x0010;
+const ODS_SELECTED_STYLE: u32 = 0x0001;
+const ODS_FOCUS_STYLE: u32 = 0x0010;
+
+#[repr(C)]
+struct DrawItem {
+    ctl_type: u32,
+    ctl_id: u32,
+    item_id: u32,
+    item_action: u32,
+    item_state: u32,
+    hwnd_item: HWND,
+    h_dc: HDC,
+    rc_item: RECT,
+    item_data: usize,
+}
 type Slot<T> = Arc<Mutex<Option<AppResult<T>>>>;
 
 fn describe(name: &str) -> (&'static str, &'static str) {
@@ -142,9 +158,55 @@ struct Choice {
     name: String,
     id: Option<Identity>,
     protected: bool,
+    protected_reason: Option<String>,
     gpu: Option<f64>,
     startup_enabled: bool,
     startup_disabled: bool,
+}
+
+fn recommendation(choice: &Choice) -> &'static str {
+    if choice.protected {
+        return "KEEP";
+    }
+    let n = choice.name.to_ascii_lowercase();
+    if n.contains("apogee")
+        || n.contains("antelopeaudio")
+        || n.contains("nvbroadcast")
+        || n == "msedgewebview2.exe"
+        || n == "postgres.exe"
+        || n == "pg_ctl.exe"
+        || n.starts_with("asus")
+    {
+        "KEEP"
+    } else if matches!(
+        n.as_str(),
+        "applephotostreams.exe" | "apsdaemon.exe" | "mdnsresponder.exe" | "everything.exe"
+    ) && choice.startup_enabled
+    {
+        "DISABLE STARTUP"
+    } else if n.contains("nvidia overlay")
+        || matches!(
+            n.as_str(),
+            "rtss.exe" | "rtsshooksloader64.exe" | "msiafterburner.exe" | "radeonsoftware.exe"
+        )
+    {
+        "CLOSE DURING GAME MODE"
+    } else if matches!(
+        n.as_str(),
+        "chrome.exe"
+            | "msedge.exe"
+            | "firefox.exe"
+            | "brave.exe"
+            | "windowsterminal.exe"
+            | "powershell.exe"
+            | "cncmd.exe"
+            | "code.exe"
+    ) || choice.gpu.unwrap_or(0.0) >= 2.0
+    {
+        "LOWER DURING GAME MODE"
+    } else {
+        "KEEP"
+    }
 }
 struct State {
     window: HWND,
@@ -293,7 +355,12 @@ impl State {
             APPS,
             "LISTBOX",
             "",
-            WS_TABSTOP | WS_VSCROLL | WS_HSCROLL | LBS_NOTIFY as u32 | LBS_NOINTEGRALHEIGHT as u32,
+            WS_TABSTOP
+                | WS_VSCROLL
+                | WS_HSCROLL
+                | LBS_NOTIFY as u32
+                | LBS_NOINTEGRALHEIGHT as u32
+                | LBS_OWNERDRAWFIXED_STYLE,
         )?;
         for (id, label) in [
             (ALLOW_CLOSE, "Close during Game Mode"),
@@ -317,13 +384,13 @@ impl State {
         self.control(
             GAME_LABEL,
             "STATIC",
-            "GAME MODE ONLY — temporary actions when you press Turn ON",
+            "GAME MODE ONLY — choose Keep / Lower / Close per optional app",
             0,
         )?;
         self.control(
             PERMANENT_LABEL,
             "STATIC",
-            "PERMANENT CLEANUP — stop auto-starting with Windows (reversible)",
+            "WINDOWS STARTUP — Disable / Restore per supported optional app (reversible)",
             0,
         )?;
         self.control(
@@ -388,6 +455,7 @@ impl State {
             }
         }
         unsafe {
+            SendMessageW(self.h(APPS), LB_SETITEMHEIGHT, 0, (28 * dpi / 96) as LPARAM);
             if !old.is_null() {
                 DeleteObject(old);
             }
@@ -558,11 +626,15 @@ impl State {
                 name: row.name.clone(),
                 id: Some(row.identity.clone()),
                 protected: false,
+                protected_reason: None,
                 gpu: None,
                 startup_enabled: false,
                 startup_disabled: false,
             });
             entry.protected |= row.protected_reason.is_some();
+            if entry.protected_reason.is_none() {
+                entry.protected_reason = row.protected_reason.clone();
+            }
             if let Some(v) = busiest_engine(&row.gpu) {
                 entry.gpu = Some(entry.gpu.unwrap_or(0.0).max(v));
             }
@@ -575,6 +647,7 @@ impl State {
                     name: rule.app.path.rsplit('\\').next().unwrap_or("App").into(),
                     id: None,
                     protected: false,
+                    protected_reason: None,
                     gpu: None,
                     startup_enabled: false,
                     startup_disabled: false,
@@ -588,6 +661,7 @@ impl State {
                     name: backup.app.path.rsplit('\\').next().unwrap_or("App").into(),
                     id: None,
                     protected: false,
+                    protected_reason: None,
                     gpu: None,
                     startup_enabled: false,
                     startup_disabled: true,
@@ -603,57 +677,51 @@ impl State {
                 .iter()
                 .any(|b| b.app.path == c.path);
         }
-        self.choices = choices
-            .into_values()
-            .filter(|c| {
-                !c.protected
-                    || self.config.rules.iter().any(|r| r.app.path == c.path)
-                    || self
-                        .config
-                        .startup_disabled
-                        .iter()
-                        .any(|b| b.app.path == c.path)
-            })
-            .collect();
-        self.choices.sort_by_key(|c| c.name.to_lowercase());
+        self.choices = choices.into_values().collect();
+        self.choices
+            .sort_by_key(|c| (!c.protected, c.name.to_lowercase()));
         unsafe {
             SendMessageW(self.h(APPS), WM_SETREDRAW, 0, 0);
             SendMessageW(self.h(APPS), LB_RESETCONTENT, 0, 0);
         }
         for c in &self.choices {
-            let status = self
+            let game = self
                 .config
                 .rules
                 .iter()
                 .find(|r| r.app.path == c.path)
                 .map(|r| {
                     if !r.active(native::now()) {
-                        "Approval expired"
+                        "EXPIRED"
                     } else {
                         match r.action {
-                            RuleAction::Close => "Normal close",
-                            RuleAction::ReduceLoad => "Reduce load",
+                            RuleAction::Close => "CLOSE",
+                            RuleAction::ReduceLoad => "LOWER",
                         }
                     }
                 })
-                .unwrap_or("Keep");
+                .unwrap_or("KEEP");
             let (category, hint) = describe(&c.name);
             let value = c.gpu.map(|v| format!(" | GPU {v:.1}%")).unwrap_or_default();
             let startup = if c.startup_disabled {
-                " | Startup disabled"
+                "DISABLED"
             } else if c.startup_enabled {
-                " | Starts with Windows"
+                "ON"
             } else {
-                ""
+                "N/A"
+            };
+            let safety = if c.protected {
+                "ESSENTIAL — DO NOT CHANGE"
+            } else {
+                "OPTIONAL"
             };
             let line = format!(
-                "{} — {} — {}{}{} | {}{}",
+                "[{safety}] {} — {} | Current: Game {game}, Startup {startup} | Recommended: {} | {}{}{}",
                 c.name,
                 category,
-                status,
-                startup,
-                if c.id.is_none() { " | not running" } else { "" },
+                recommendation(c),
                 hint,
+                if c.id.is_none() { " | not running" } else { "" },
                 value
             );
             unsafe {
@@ -666,14 +734,24 @@ impl State {
             }
         }
         unsafe {
-            SendMessageW(self.h(APPS), LB_SETHORIZONTALEXTENT, 1100, 0);
+            SendMessageW(self.h(APPS), LB_SETHORIZONTALEXTENT, 1450, 0);
             SendMessageW(self.h(APPS), WM_SETREDRAW, 1, 0);
             InvalidateRect(self.h(APPS), null(), 1);
         }
+        if !self.choices.is_empty() {
+            unsafe {
+                SendMessageW(self.h(APPS), LB_SETCURSEL, 0, 0);
+            }
+        }
         self.text(
             INTRO,
-            "CHOOSE WHAT TO CLEAN\r\nSelect an app, then choose Game Mode only or Permanent cleanup below.",
+            "CHOOSE WHAT TO CLEAN\r\nRed ESSENTIAL rows are protected. Select an OPTIONAL app to choose Keep, Lower, Close, or startup cleanup.",
         );
+        let idle = runner::database()
+            .and_then(|db| db.active())
+            .map(|active| active.is_none())
+            .unwrap_or(false);
+        self.refresh_selected(idle);
     }
     fn selected(&self) -> AppResult<&Choice> {
         let i = unsafe { SendMessageW(self.h(APPS), LB_GETCURSEL, 0, 0) };
@@ -684,6 +762,163 @@ impl State {
             .get(i as usize)
             .ok_or("Selection changed; refresh the list.".into())
     }
+    fn refresh_selected(&self, idle: bool) {
+        let index = unsafe { SendMessageW(self.h(APPS), LB_GETCURSEL, 0, 0) };
+        let Some(choice) = (index >= 0)
+            .then(|| self.choices.get(index as usize))
+            .flatten()
+        else {
+            for id in [ALLOW_CLOSE, REDUCE, KEEP, PERMANENT, RESTORE_STARTUP] {
+                self.enable(id, false);
+            }
+            self.text(
+                DETAIL,
+                "Select an app. Red ESSENTIAL rows are informational only and cannot be changed.",
+            );
+            return;
+        };
+        let rule = self.config.rules.iter().find(|r| r.app.path == choice.path);
+        let has_rule = rule.is_some();
+        let current_game = match rule.map(|r| &r.action) {
+            Some(RuleAction::Close) => "Close",
+            Some(RuleAction::ReduceLoad) => "Lower",
+            None => "Keep",
+        };
+        let current_startup = if choice.startup_disabled {
+            "Disabled by Process Optimizer"
+        } else if choice.startup_enabled {
+            "Starts with Windows"
+        } else {
+            "No supported startup entry"
+        };
+        self.text(
+            ALLOW_CLOSE,
+            if matches!(rule.map(|r| &r.action), Some(RuleAction::Close)) {
+                "Close during Game Mode  [CURRENT]"
+            } else {
+                "Close during Game Mode"
+            },
+        );
+        self.text(
+            REDUCE,
+            if matches!(rule.map(|r| &r.action), Some(RuleAction::ReduceLoad)) {
+                "Lower during Game Mode  [CURRENT]"
+            } else {
+                "Lower during Game Mode"
+            },
+        );
+        self.text(
+            KEEP,
+            if !has_rule {
+                "Keep  [CURRENT]"
+            } else {
+                "Keep / undo Game Mode rule"
+            },
+        );
+        self.text(
+            PERMANENT,
+            if choice.startup_disabled {
+                "Windows startup disabled  [CURRENT]"
+            } else {
+                "Disable Windows startup"
+            },
+        );
+        self.text(RESTORE_STARTUP, "Restore Windows startup");
+
+        self.enable(
+            ALLOW_CLOSE,
+            idle && !choice.protected && choice.id.is_some(),
+        );
+        self.enable(REDUCE, idle && !choice.protected && choice.id.is_some());
+        // Removing a stale/unsafe rule is always allowed while idle, even if the app is now protected.
+        self.enable(KEEP, idle && has_rule);
+        self.enable(
+            PERMANENT,
+            idle && !choice.protected && choice.startup_enabled && !choice.startup_disabled,
+        );
+        // Restoration is a safety operation and remains available for a previously disabled item.
+        self.enable(RESTORE_STARTUP, idle && choice.startup_disabled);
+
+        let (category, hint) = describe(&choice.name);
+        let safety = if choice.protected {
+            format!(
+                "SAFETY: ESSENTIAL — DO NOT CHANGE{}",
+                choice
+                    .protected_reason
+                    .as_deref()
+                    .map(|r| format!(" ({r})"))
+                    .unwrap_or_default()
+            )
+        } else {
+            "SAFETY: Optional — user-controlled".into()
+        };
+        self.text(
+            DETAIL,
+            &format!(
+                "{} | Current: Game Mode = {}; Windows startup = {}. Recommended: {}. {} — {}",
+                safety,
+                current_game,
+                current_startup,
+                recommendation(choice),
+                category,
+                hint
+            ),
+        );
+    }
+
+    fn draw_app_item(&self, item: &DrawItem) -> LRESULT {
+        if item.ctl_id != APPS as u32 || item.item_id == u32::MAX {
+            return 0;
+        }
+        let index = item.item_id as usize;
+        let selected = item.item_state & ODS_SELECTED_STYLE != 0;
+        unsafe {
+            FillRect(
+                item.h_dc,
+                &item.rc_item,
+                GetSysColorBrush(if selected {
+                    COLOR_HIGHLIGHT
+                } else {
+                    COLOR_WINDOW
+                }),
+            );
+            SetBkMode(item.h_dc, TRANSPARENT as i32);
+            let protected = self.choices.get(index).is_some_and(|c| c.protected);
+            let color = if protected {
+                0x000000D8 // COLORREF: strong red, intentionally retained even when selected.
+            } else if selected {
+                GetSysColor(COLOR_HIGHLIGHTTEXT)
+            } else {
+                GetSysColor(COLOR_WINDOWTEXT)
+            };
+            SetTextColor(item.h_dc, color);
+            let len = SendMessageW(item.hwnd_item, LB_GETTEXTLEN, item.item_id as usize, 0);
+            if len >= 0 {
+                let mut buffer = vec![0u16; len as usize + 1];
+                SendMessageW(
+                    item.hwnd_item,
+                    LB_GETTEXT,
+                    item.item_id as usize,
+                    buffer.as_mut_ptr() as LPARAM,
+                );
+                let mut rect = item.rc_item;
+                rect.left += 6;
+                rect.right -= 6;
+                DrawTextW(
+                    item.h_dc,
+                    buffer.as_mut_ptr(),
+                    len as i32,
+                    &mut rect,
+                    DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS,
+                );
+            }
+            if item.item_state & ODS_FOCUS_STYLE != 0 {
+                DrawFocusRect(item.h_dc, &item.rc_item);
+            }
+        }
+        1
+    }
+
     fn permit(&mut self, action: Option<RuleAction>) -> AppResult<()> {
         if self.preparing || runner::database()?.active()?.is_some() {
             return Err("Turn Game Mode OFF before changing app permissions.".into());
@@ -985,16 +1220,8 @@ impl State {
             let db = runner::database()?;
             let active = db.active()?;
             let idle = active.is_none();
-            for id in [
-                ALLOW_CLOSE,
-                REDUCE,
-                KEEP,
-                PERMANENT,
-                RESTORE_STARTUP,
-                ADVANCED,
-            ] {
-                self.enable(id, idle);
-            }
+            self.enable(ADVANCED, idle);
+            self.refresh_selected(idle);
             self.enable(SCAN, !self.scanning);
             self.enable(TOGGLE, true);
             self.enable(
@@ -1081,6 +1308,10 @@ impl State {
             TOGGLE => self.toggle()?,
             SETTINGS => self.panel(!self.expanded),
             SCAN => self.scan(),
+            APPS => {
+                let idle = runner::database()?.active()?.is_none();
+                self.refresh_selected(idle);
+            }
             ALLOW_CLOSE => self.permit(Some(RuleAction::Close))?,
             REDUCE => self.permit(Some(RuleAction::ReduceLoad))?,
             KEEP => self.permit(None)?,
@@ -1156,6 +1387,12 @@ unsafe extern "system" fn proc(window: HWND, msg: u32, w: WPARAM, l: LPARAM) -> 
                         info(window, &e);
                     }
                     return 0;
+                }
+                WM_DRAWITEM => {
+                    let item = &*(l as *const DrawItem);
+                    if item.ctl_id == APPS as u32 {
+                        return s.draw_app_item(item);
+                    }
                 }
                 WM_SIZE => {
                     s.minimized = w == SIZE_MINIMIZED as usize;
