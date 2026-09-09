@@ -3,7 +3,7 @@ name = "process-optimizer"
 version = "0.4.0"
 edition = "2021"
 rust-version = "1.85"
-description = "GPU-first, consent-based native Windows game-session optimizer"
+description = "Native Windows game-mode and reversible background-startup optimizer"
 publish = false
 
 [lib]
