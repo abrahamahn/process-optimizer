@@ -529,3 +529,64 @@ fn completed_session_requires_an_outcome_for_verified_approved_reopening() {
     });
     assert!(integrity::validate_record(&s).is_ok());
 }
+
+struct GroupClosure {
+    called: Vec<u32>,
+    gate: FaultKind,
+}
+impl Backend for GroupClosure {
+    fn authorize(&mut self, id: &Identity) -> NativeResult<()> {
+        if !self.called.is_empty() && id.pid == 11 {
+            Err(Fault::new(
+                self.gate,
+                "fixture target exit or session cancellation",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+    fn read(&mut self, _: &Identity, _: Property) -> NativeResult<Value> {
+        panic!("close-only fixture")
+    }
+    fn write(&mut self, _: &Identity, _: &Value) -> NativeResult<()> {
+        panic!("close-only fixture")
+    }
+    fn close(&mut self, target: &Identity, _: bool, _: u32) -> NativeResult<CloseState> {
+        self.called.push(target.pid);
+        Ok(CloseState::ClosedGracefully)
+    }
+}
+fn group_session() -> Session {
+    let mut s = session();
+    for pid in [11, 12] {
+        s.plan.actions.push(ApprovedAction {
+            target: id(pid, "background"),
+            action: ActionKind::Close,
+            reopen: None,
+        });
+    }
+    s
+}
+#[test]
+fn expected_helper_exit_keeps_the_game_session_active_and_continues_reviewed_actions() {
+    let mut s = group_session();
+    let mut backend = GroupClosure {
+        called: vec![],
+        gate: FaultKind::Gone,
+    };
+    engine::apply(&mut s, &mut backend, &mut Store::default()).unwrap();
+    assert_eq!(backend.called, vec![10, 12]);
+    assert_eq!(s.stage, Stage::Active);
+    assert_eq!(s.closed[1].state, CloseState::AlreadyGone);
+    assert!(s.reopened.is_empty());
+}
+#[test]
+fn session_cancellation_is_not_treated_as_a_harmless_helper_exit() {
+    let mut s = group_session();
+    let mut backend = GroupClosure {
+        called: vec![],
+        gate: FaultKind::Denied,
+    };
+    assert!(engine::apply(&mut s, &mut backend, &mut Store::default()).is_err());
+    assert_eq!(backend.called, vec![10]);
+}

@@ -57,7 +57,7 @@ RecoveryRequired ----------> Acknowledged (explicit user review only)
 
 S-01: Attach mode requires a verified running game before accepting the plan and before each new action. If the game is already gone, do not apply anything. The first version does not guess launcher successors. Real game termination or explicit Restore stops new optimization and initiates restoration.
 
-S-02: Cancel during application is checked between bounded actions. A delivered close request cannot be retracted; report that limitation. No additional targets are introduced after review. New processes are not automatically acted on.
+S-02: Cancel during application is checked between bounded actions. An exact target that exits after whole-plan preflight is skipped as AlreadyGone without a native call; expected helper exits do not cancel the game session. Authorization revocation or game cancellation still stops new actions. An error after a native close call remains uncertain, never a harmless-exit inference. A delivered close request cannot be retracted; report that limitation. No additional targets are introduced after review. New processes are not automatically acted on.
 
 S-03: A second Start is rejected while another session is unfinished. A second game is never automatically killed or optimized; the original selected game remains the lifetime authority. Future multi-game support needs explicit shared ownership, not accidental overlapping sessions.
 

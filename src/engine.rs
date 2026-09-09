@@ -45,12 +45,30 @@ pub fn apply<B: Backend, J: Journal>(s: &mut Session, b: &mut B, j: &mut J) -> A
     s.stage = Stage::Preparing;
     j.save(s)?;
     for action in s.plan.actions.clone() {
-        b.authorize(&action.target).map_err(|e| {
-            format!(
-                "Application stopped before further mutations: {}",
-                e.message
-            )
-        })?;
+        if let Err(e) = b.authorize(&action.target) {
+            if e.kind != FaultKind::Gone {
+                return Err(format!(
+                    "Application stopped before further mutations: {}",
+                    e.message
+                ));
+            }
+            // A previously closed app may have ended its own helpers. Do not
+            // mistake their exact-lifetime exit for cancellation of the game.
+            if matches!(action.action, ActionKind::Close | ActionKind::ForceClose) {
+                s.closed.push(CloseRecord {
+                    target: action.target.clone(),
+                    force_allowed: action.action == ActionKind::ForceClose,
+                    state: CloseState::AlreadyGone,
+                    detail: "Original target exited before its action. No close was sent and no replacement was touched.".into(),
+                });
+            }
+            s.note(format!(
+                "Skipped exited original target PID {}: {}",
+                action.target.pid, e.message
+            ));
+            j.save(s)?;
+            continue;
+        }
         match action.action {
             ActionKind::LowerPriorities => {
                 let o = &s.plan.options;
