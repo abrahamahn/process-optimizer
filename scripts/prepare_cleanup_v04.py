@@ -59,7 +59,6 @@ edit(
 """,
 )
 
-# Friendlier Settings, copyable process report, and distinct temporary/persistent actions.
 edit(
     "src/windows/simple_ui.rs",
     "use super::{gpu, manual as native, process, runner, wide};",
@@ -111,28 +110,28 @@ edit(
 
 fn describe(name: &str) -> (&'static str, &'static str) {
     let n = name.to_ascii_lowercase();
-    if matches!(n.as_str(), "chrome.exe" | "msedge.exe" | "firefox.exe" | "brave.exe") {
-        ("Web browser", "Usually a Game Mode-only choice")
-    } else if n.contains("nvidia overlay") || matches!(n.as_str(), "rtss.exe" | "rtsshooksloader64.exe" | "msiafterburner.exe" | "radeonsoftware.exe") {
-        ("Overlay / monitoring", "Close for gaming only if you do not use its overlay or capture")
-    } else if matches!(n.as_str(), "windowsterminal.exe" | "powershell.exe" | "cncmd.exe" | "code.exe") {
-        ("Developer tool", "Usually a Game Mode-only choice")
-    } else if matches!(n.as_str(), "applephotostreams.exe" | "apsdaemon.exe" | "mdnsresponder.exe") {
-        ("Apple sync / discovery", "Permanent startup cleanup can make sense if unused")
-    } else if n.contains("apogee") || n.contains("antelopeaudio") {
-        ("Audio hardware software", "Keep if you use that audio device")
-    } else if n.starts_with("asus") {
-        ("ASUS utility", "Review carefully; device hotkeys or power features may depend on it")
-    } else if n.contains("nvbroadcast") {
-        ("NVIDIA Broadcast", "Keep if you use microphone or camera effects")
-    } else if n == "everything.exe" {
-        ("File search utility", "Game Mode or startup cleanup if you do not need it")
-    } else if n == "msedgewebview2.exe" {
-        ("App web component", "Keep unless you understand which parent app owns it")
-    } else if n == "postgres.exe" || n == "pg_ctl.exe" {
-        ("Developer database", "Use a proper database stop; do not force-close it")
+    if matches!(n.as_str(), \"chrome.exe\" | \"msedge.exe\" | \"firefox.exe\" | \"brave.exe\") {
+        (\"Web browser\", \"Usually a Game Mode-only choice\")
+    } else if n.contains(\"nvidia overlay\") || matches!(n.as_str(), \"rtss.exe\" | \"rtsshooksloader64.exe\" | \"msiafterburner.exe\" | \"radeonsoftware.exe\") {
+        (\"Overlay / monitoring\", \"Close for gaming only if you do not use its overlay or capture\")
+    } else if matches!(n.as_str(), \"windowsterminal.exe\" | \"powershell.exe\" | \"cncmd.exe\" | \"code.exe\") {
+        (\"Developer tool\", \"Usually a Game Mode-only choice\")
+    } else if matches!(n.as_str(), \"applephotostreams.exe\" | \"apsdaemon.exe\" | \"mdnsresponder.exe\") {
+        (\"Apple sync / discovery\", \"Permanent startup cleanup can make sense if unused\")
+    } else if n.contains(\"apogee\") || n.contains(\"antelopeaudio\") {
+        (\"Audio hardware software\", \"Keep if you use that audio device\")
+    } else if n.starts_with(\"asus\") {
+        (\"ASUS utility\", \"Review carefully; device hotkeys or power features may depend on it\")
+    } else if n.contains(\"nvbroadcast\") {
+        (\"NVIDIA Broadcast\", \"Keep if you use microphone or camera effects\")
+    } else if n == \"everything.exe\" {
+        (\"File search utility\", \"Game Mode or startup cleanup if you do not need it\")
+    } else if n == \"msedgewebview2.exe\" {
+        (\"App web component\", \"Keep unless you understand which parent app owns it\")
+    } else if n == \"postgres.exe\" || n == \"pg_ctl.exe\" {
+        (\"Developer database\", \"Use a proper database stop; do not force-close it\")
     } else {
-        ("Optional app", "Review before changing")
+        (\"Optional app\", \"Review before changing\")
     }
 }
 
@@ -241,10 +240,9 @@ edit(
 """,
 )
 
-# Replace visibility/layout as one cohesive block.
-start = Path("src/windows/simple_ui.rs").read_text(encoding="utf-8")
-a = start.index("    fn visibility(&self) {")
-b = start.index("    fn panel(&mut self, expanded: bool) {", a)
+source = Path("src/windows/simple_ui.rs").read_text(encoding="utf-8")
+a = source.index("    fn visibility(&self) {")
+b = source.index("    fn panel(&mut self, expanded: bool) {", a)
 replacement = r'''    fn visibility(&self) {
         for id in PANEL {
             unsafe { ShowWindow(self.h(id), SW_HIDE); }
@@ -312,7 +310,7 @@ replacement = r'''    fn visibility(&self) {
         }
     }
 '''
-Path("src/windows/simple_ui.rs").write_text(start[:a] + replacement + start[b:], encoding="utf-8", newline="\n")
+Path("src/windows/simple_ui.rs").write_text(source[:a] + replacement + source[b:], encoding="utf-8", newline="\n")
 
 edit(
     "src/windows/simple_ui.rs",
@@ -334,8 +332,6 @@ edit(
         }
 """,
 )
-
-# Populate startup state and use friendly descriptions.
 edit(
     "src/windows/simple_ui.rs",
     """    fn populate(&mut self) {
@@ -447,7 +443,6 @@ edit(
 """,
 )
 
-# Add persistent startup actions and copyable report before toggle().
 needle = "    fn toggle(&mut self) -> AppResult<()> {"
 text = Path("src/windows/simple_ui.rs").read_text(encoding="utf-8")
 assert text.count(needle) == 1
@@ -481,7 +476,6 @@ methods = r'''    fn disable_startup(&mut self) -> AppResult<()> {
             backup.owner_sid = owner.clone();
             config.startup_disabled.push(backup);
         }
-        // Backup is durable before deleting any startup value.
         db.save_manual_settings(&config)?;
         for entry in &entries {
             if let Err(e) = startup::disable(entry) {
@@ -556,7 +550,6 @@ methods = r'''    fn disable_startup(&mut self) -> AppResult<()> {
 '''
 Path("src/windows/simple_ui.rs").write_text(text.replace(needle, methods + needle), encoding="utf-8", newline="\n")
 
-# Simpler default: experimental GPU scheduling remains in Advanced only.
 edit(
     "src/windows/simple_ui.rs",
     """        let experimental = unsafe { SendMessageW(self.h(GPU_OPTION), 0x00F0, 0, 0) } == 1;
@@ -628,7 +621,6 @@ edit(
 """,
 )
 
-# Behavioral spec: allow reversible persistent startup cleanup, not irreversible debloat.
 edit(
     "specs/01-product.md",
     "P-03: Overclocking, undervolting, fan/firmware control, permanent debloating, security disabling, kernel patching, driver reset, game injection, anti-cheat bypass and a stripped boot shell are excluded.",
@@ -638,31 +630,26 @@ anchor = "M-06: A dead worker, unresolved operation or corrupt store must not be
 text = Path("specs/01-product.md").read_text(encoding="utf-8")
 assert text.count(anchor) == 1
 insert = """M-07: Settings presents two plain-language choices: **Game Mode only** (temporary close/reduce actions applied only at user-initiated On) and **Permanent cleanup** (persistent, reversible startup cleanup). Permanent cleanup v0.4 only supports exact current-user `Run` startup values whose executable token matches the reviewed app. It backs up the original value before deletion and restores only when no conflicting value occupies that name. It never implies uninstalling the app, disabling Windows services/drivers/tasks, or closing the currently running process. Unsupported startup sources are reported without fallback.\n\nM-08: Settings exposes a copyable process report. The user can drag-select text or use Ctrl+A/Ctrl+C and paste the report into support/chat. The report may include PID, executable display name, bounded GPU/memory observation and protection status, but excludes executable paths, command lines, document/window content, SIDs and account identifiers.\n\n"
-text = text.replace(anchor, insert + anchor)
-Path("specs/01-product.md").write_text(text, encoding="utf-8", newline="\n")
+Path("specs/01-product.md").write_text(text.replace(anchor, insert + anchor), encoding="utf-8", newline="\n")
 
-# Policy owner: documented startup boundary.
 text = Path("specs/02-gpu-and-process-policy.md").read_text(encoding="utf-8")
 anchor = "## Unsupported features and future adapters"
 assert text.count(anchor) == 1
-policy = """## Persistent startup cleanup\n\nPersistent cleanup is not a gaming-session mutation. Version 0.4 may enumerate and edit only `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run` string values. An entry is eligible only when its first executable token can be conservatively resolved to the reviewed canonical executable; environment-variable/shell ambiguity is unsupported. Store the exact value name, command string and string kind before deletion. Re-read immediately before deletion; observable drift cancels the operation. Restoration never overwrites a different value using the same name.\n\nDo not use this feature to disable machine-wide startup, services, drivers, scheduled tasks, security software, device/audio/Bluetooth components, shell components or vendor utilities that cannot be attributed through the supported source. There is no process-kill fallback. Future service/task adapters require separate owner contracts, elevation design, dependency checks and tests.\n\n"""
-Path("specs/02-gpu-and-process-policy.md").write_text(text.replace(anchor, policy + anchor), encoding="utf-8", newline="\n")
+policy_block = """## Persistent startup cleanup\n\nPersistent cleanup is not a gaming-session mutation. Version 0.4 may enumerate and edit only `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run` string values. An entry is eligible only when its first executable token can be conservatively resolved to the reviewed canonical executable; environment-variable/shell ambiguity is unsupported. Store the exact value name, command string and string kind before deletion. Re-read immediately before deletion; observable drift cancels the operation. Restoration never overwrites a different value using the same name.\n\nDo not use this feature to disable machine-wide startup, services, drivers, scheduled tasks, security software, device/audio/Bluetooth components, shell components or vendor utilities that cannot be attributed through the supported source. There is no process-kill fallback. Future service/task adapters require separate owner contracts, elevation design, dependency checks and tests.\n\n"""
+Path("specs/02-gpu-and-process-policy.md").write_text(text.replace(anchor, policy_block + anchor), encoding="utf-8", newline="\n")
 
-# Validation owner: add specific new cases.
 text = Path("specs/04-validation-and-delivery.md").read_text(encoding="utf-8")
 anchor = "| Empty current matches in manual mode | Honest no-change state, never fallback to wildcard cleanup |"
 assert text.count(anchor) == 1
 extra = anchor + "\n| Copyable process report | Drag/Ctrl+A/Ctrl+C-ready plain text; no paths, command lines, documents, SIDs or account identifiers |\n| Permanent cleanup unsupported source | Report unsupported; no service/task/kill fallback |\n| Permanent cleanup supported Run entry | Backup exact value before delete and verify absence |\n| Permanent cleanup entry changes after review | Abort deletion; retain existing value |\n| Restore startup name conflict | Preserve conflicting value; never overwrite it |"
 Path("specs/04-validation-and-delivery.md").write_text(text.replace(anchor, extra), encoding="utf-8", newline="\n")
 
-# README product language.
 text = Path("README.md").read_text(encoding="utf-8")
 anchor = "## Current implementation"
 assert text.count(anchor) == 1
 intro = """## New in 0.4.0 — two cleanup choices\n\nSettings now separates **Game Mode only** from **Permanent cleanup**. Game Mode only closes or reduces approved apps when you press ON. Permanent cleanup currently means one narrow, reversible operation: disable a matching current-user Windows `Run` startup entry after backing up its exact original value. It does not uninstall apps, disable services/drivers/tasks, or kill a running process. Unsupported sources are left alone.\n\nThe Settings list now explains common app types in plain language (browser, overlay, developer tool, sync utility, audio hardware software, ASUS utility, and so on). **Copy / paste process list** opens a read-only text view: drag-select text or press Ctrl+A/Ctrl+C and paste it directly into ChatGPT. The copied report deliberately omits executable paths, command lines, document/window content and account identifiers.\n\n"""
 Path("README.md").write_text(text.replace(anchor, intro + anchor), encoding="utf-8", newline="\n")
 
-# Deterministic model tests for persistent settings and schema migration shape.
 path = Path("tests/manual_mode.rs")
 text = path.read_text(encoding="utf-8")
 text += r'''
