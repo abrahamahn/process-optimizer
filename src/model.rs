@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 pub type AppResult<T> = Result<T, String>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -97,6 +97,8 @@ pub struct Settings {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Plan {
+    #[serde(default)]
+    pub manual_mode: bool,
     pub game_path: String,
     pub game: Option<Identity>,
     pub actions: Vec<ApprovedAction>,

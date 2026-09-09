@@ -2,6 +2,9 @@
 use crate::model::*;
 pub fn render(s: &Session) -> String {
     let mut text = format!("GAME SESSION — {:?}\r\n{}\r\nSession: {}\r\nGaming performance benefit: not measured\r\n\r\n", s.stage, s.plan.game_path, s.id);
+    if s.plan.manual_mode {
+        text.push_str("Manual Game Mode: ON until explicitly switched OFF; no game executable selected.\r\n\r\n");
+    }
     text.push_str("SETTINGS\r\n");
     if s.changes.is_empty() {
         text.push_str("No scheduling settings were changed.\r\n");

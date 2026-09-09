@@ -110,3 +110,12 @@ The initial adapter requires an ordinary local Windows-GUI PE image and an obser
 Both WTS extended session state (Active and Unlocked) and the input desktop (Default) must be readable immediately before launch. Missing/locked/disconnected evidence produces Deferred; the adapter never unlocks the desktop or changes privileges. Windows 7/Server 2008 R2 reversed lock-flag behavior is outside the supported Windows 11 product target. OS checks are snapshots, not a promise that another actor cannot lock the desktop immediately afterward.
 
 Primary API references: [WTSINFOEX_LEVEL1_W](https://learn.microsoft.com/en-us/windows/win32/api/wtsapi32/ns-wtsapi32-wtsinfoex_level1_w), [OpenInputDesktop](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-openinputdesktop), [CreateFile sharing](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew), [CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw).
+
+
+## Manual Game Mode rules (0.3.0)
+
+The default no-game-selection flow applies only explicit recurring background-app permissions. Before each native operation, re-read the permission, validate action kind, owner, file ID/size/write time and expiry, and perform existing critical/system/session/protection checks. Current foreground application evidence is an additional veto, never positive authorization or automatic game detection. Permission checks do not weaken the existing exact process-handle checks.
+
+Normal-close permissions never allow ForceClose or generic suspension. Reduce load permits lower-only CPU/EcoQoS/memory policies and, only with the activation's fresh experimental consent, GPU scheduling. Required graphics work remains. Unknown apps are never altered. File updates, denied observations and protected groups are skipped/rejected rather than guessed.
+
+Primary references for the foreground veto: [GetForegroundWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getforegroundwindow), [GetWindowThreadProcessId](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getwindowthreadprocessid). Neither API establishes that an application is a game.

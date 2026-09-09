@@ -14,22 +14,38 @@ P-03: Overclocking, undervolting, fan/firmware control, permanent debloating, se
 
 P-04: Protect networking, Bluetooth, input, audio, display, security, accessibility, game authentication/anti-cheat and required thermal/device software. No process-name kill list, service-host termination, suspension of arbitrary threads, shader-cache deletion, pagefile disabling or RAM/VRAM purge.
 
+## Simple On/Off workflow (0.3.0, latest user decision)
+
+The default native window MUST expose only Game Mode status, Turn ON/OFF, a small summary and Settings. No game executable browser, game-process selection, per-game profile or process grid appears on this screen. Settings is a separate compact view, not an always-expanded dashboard. The older explicit game-attached console remains available only under Settings > Advanced tools.
+
+M-01: The default session is manual. A user may turn it on before launching any game, switch games normally, and turn it off when done. Game exit, Alt-Tab, minimizing or closing the settings window MUST NOT end this mode. The independent worker lasts until explicit Off or a recovery-triggering failure. No foreground heuristic is presented as reliable automatic game recognition.
+
+M-02: One-time Settings chooses optional background apps and explicitly approves recurring normal-close or Reduce load actions. Each approval covers the named local executable and its current matching processes at each user-initiated On for no more than 30 days. File ID/size/last-write evidence and user ownership are bound; a detected file change or expiry requires renewed approval. These are metadata checks, not content signatures. Keep removes permission. Nothing is preapproved, and no unknown game/app is classified disposable automatically.
+
+M-03: Normal mode never asks to select a game. First On with no valid permission opens Settings rather than claiming optimization. Later On rebuilds an exact finite plan from valid permissions and current process lifetimes, then starts it without a redundant approval dialog. All unapproved apps are untouched. An empty current match may stay On, but MUST state that nothing was changed.
+
+M-04: Cleanup runs once at each On. New or manually reopened processes are not chased. The mode does not promise GPU exclusivity or a blanket GPU ban. Reduce load bundles supported CPU/EcoQoS/memory lowering; GPU scheduling is opt-in for the next activation only and requires its distinct experimental confirmation. No remembered force or reopening permission exists in this simple path.
+
+M-05: Off stops new actions and restores eligible settings via the existing journal. It does not relaunch closed apps or recover unsaved work; disclose this in the app-approval dialog and Settings. Existing advanced reopening behavior remains separate. Turning Off a legacy attached session uses its existing approved recovery behavior, including already approved reopening.
+
+M-06: A dead worker, unresolved operation or corrupt store must not be displayed as an ordinary successful On/Off transition. Main offers restoration; Settings exposes details and explicit acknowledgement. Recurring rule edits are disabled during active/preparing sessions. System/user protection and current native authorization override saved permission, including foreground-app checks before mutations.
+
 ## UI state and first-run defaults
 
 | State | Visible behavior | Allowed operations |
 | --- | --- | --- |
-| Idle | No active session; recovery status and selected game | Refresh, select game, configure protection, build plan |
+| Idle | Game Mode OFF, On button, Settings | Turn On using existing permissions or perform one-time setup |
 | Inspecting | Read-only resource collection; unknown values are labeled | Cancel observation; no mutations |
 | Reviewing | Exact target lifetimes, actions, risks and recovery categories | Edit/remove actions, approve or cancel |
 | Starting | Independent controller validates and records the request | Restore/cancel; no second Start |
-| Active | Session identifier, game lifetime, applied/skipped actions | Restore; close UI without abandoning recovery |
+| Active | Game Mode ON, Off button and outcome summary | Turn Off; close UI without abandoning worker/recovery |
 | Restoring | New optimization stops; per-action outcomes displayed | Idempotent Restore retry |
 | RecoveryRequired | Unfinished/conflicting changes and their reasons | Retry recovery or explicitly acknowledge unresolved records |
 | Completed | Restored settings, exited processes, reopen outcomes and unresolved limits are distinguished | New inspection/session |
 
-U-01: First launch is read-only. No selected termination targets, no persisted destructive approval, no automatic activation, no force-close fallback, no reopen permission and no experimental policy enabled.
+U-01: First launch is read-only. No selected termination targets, no default recurring approval, no automatic activation, no force-close fallback, no reopen permission and no experimental policy enabled. M-02 is the only recurring permission route in the simple UI.
 
-U-02: The initial safe interaction attaches to an explicitly selected already-running game. The selection identifies its actual process lifetime, not merely a launcher or foreground window. The UI MUST reject known launchers as the game target. Automatic launcher tracking and saved auto-activation are unavailable until their adapters and lifetime handoff tests exist; unavailable functionality is shown honestly, not simulated.
+U-02: The advanced game-attached console attaches to an explicitly selected already-running game. The default manual flow instead follows M-01 through M-06. The selection identifies its actual process lifetime, not merely a launcher or foreground window. The UI MUST reject known launchers as the game target. Automatic launcher tracking and saved auto-activation are unavailable until their adapters and lifetime handoff tests exist; unavailable functionality is shown honestly, not simulated.
 
 U-03: Select the game's observed adapter when unambiguous. If no adapter or multiple adapters can be identified, show unknown/ambiguous and allow explicit inspection; never assume GPU 0. A manually approved close can still run without GPU evidence, but MUST NOT be presented as a measured GPU recommendation.
 
@@ -55,7 +71,7 @@ U-12: Reopen after close is an independent per-main-GUI-process opt-in, removabl
 
 ## Consent
 
-C-01: Every action requires session-scoped review of exact target identity, operation, reason, save-state uncertainty and recovery category. Explicit confirmation that optional targets are nonessential is necessary; high resource usage is never permission. Hard protection still overrides consent.
+C-01: Advanced actions require session-scoped review of exact target identity, operation, reason, save-state uncertainty and recovery category. Simple manual actions may use the separate explicit recurring grant in M-02; the worker still validates the exact operation, live identity and unchanged permission before a mutation. Explicit confirmation that optional targets are nonessential is necessary; high resource usage is never permission. Hard protection still overrides consent.
 
 | Operation | Approval | Recovery disclosure |
 | --- | --- | --- |
@@ -73,7 +89,7 @@ C-04: Cancellation before the durable session record causes no mutations. Cancel
 
 C-05: Reopening is never enabled by default. Generic reopening is limited to a verified original executable with no replayed command line, normal user privileges, unchanged file identity and no existing replacement instance. Headless jobs, migrations and shell commands are not generic reopen candidates.
 
-C-06: Saved automatic closure rules, if later delivered, require their own opt-in, expiry/revocation and identity-version rules. A filename alone is not persistent authorization. In v1 no unattended future-process termination rule is created.
+C-06: Recurring simple-mode rules are only the M-02 opt-in: user-initiated On, no more than 30 days, exact executable evidence, revocable with Keep, no future-process enforcement. Existing per-game profiles remain recipes, not recurring permission. No filename-only match, remembered force or remembered experimental approval is allowed.
 
 ## Protected and optional applications
 

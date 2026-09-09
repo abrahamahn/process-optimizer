@@ -31,6 +31,7 @@ fn session() -> Session {
     Session::new(
         "contract".into(),
         Plan {
+            manual_mode: false,
             game_path: r"C:\Game\game.exe".into(),
             game: Some(Identity {
                 path: r"C:\Game\game.exe".into(),

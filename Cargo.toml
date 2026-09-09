@@ -1,6 +1,6 @@
 [package]
 name = "process-optimizer"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.85"
 description = "GPU-first, consent-based native Windows game-session optimizer"
@@ -30,7 +30,7 @@ windows-sys = { version = "=0.61.2", features = [
   "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_LibraryLoader", "Win32_System_SystemInformation",
   "Win32_System_Performance", "Win32_Storage_FileSystem",
-  "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls",
+  "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls",
   "Win32_UI_Controls_Dialogs", "Win32_UI_HiDpi", "Win32_Graphics_Gdi"
 ] }
 

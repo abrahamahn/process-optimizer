@@ -48,6 +48,7 @@ fn session(target: Identity, action: ActionKind) -> Session {
     Session::new(
         format!("test-{}", target.pid),
         Plan {
+            manual_mode: false,
             game_path: r"C:\TestOnly\NotAnActualGame.exe".into(),
             game: Some(Identity {
                 pid: 99,

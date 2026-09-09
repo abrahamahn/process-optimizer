@@ -25,6 +25,7 @@ fn session(action: ActionKind) -> Session {
     Session::new(
         "recovery-boundaries".into(),
         Plan {
+            manual_mode: false,
             game_path: game.path.clone(),
             game: Some(game),
             actions: vec![ApprovedAction {

@@ -2,7 +2,7 @@
 
 #[cfg(windows)]
 fn main() {
-    use process_optimizer::windows::{runner, ui};
+    use process_optimizer::windows::{runner, simple_ui, ui};
     let args: Vec<String> = std::env::args().collect();
     let result = match args.get(1).map(String::as_str) {
         Some("--session") => args
@@ -15,8 +15,11 @@ fn main() {
             .get(2)
             .ok_or_else(|| "Missing output path.".to_string())
             .and_then(|p| runner::write_probe(std::path::Path::new(p))),
-        Some("--ui-smoke") => ui::smoke(),
-        None => ui::run(),
+        Some("--ui-smoke") => simple_ui::smoke(),
+        Some("--advanced") => ui::run(),
+        Some("--simple-preview") => simple_ui::preview(),
+        Some("--advanced-smoke") => ui::smoke(),
+        None => simple_ui::run(),
         _ => Err("Unknown option. Open the application without arguments.".into()),
     };
     if let Err(error) = result {

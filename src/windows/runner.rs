@@ -98,7 +98,11 @@ pub fn run(id: &str) -> AppResult<()> {
         db.save(&s)?;
         return Ok(());
     }
-    let game = match attach_or_launch(&s.plan) {
+    let game = match if s.plan.manual_mode {
+        Ok(None)
+    } else {
+        attach_or_launch(&s.plan).map(Some)
+    } {
         Ok(g) => g,
         Err(e) => {
             s.note(e);
@@ -107,7 +111,7 @@ pub fn run(id: &str) -> AppResult<()> {
             return Ok(());
         }
     };
-    s.game = Some(game.clone());
+    s.game = game.clone();
     db.save(&s)?;
     let cancel = Arc::new(AtomicBool::new(false));
     let done = Arc::new(AtomicBool::new(false));
@@ -117,9 +121,9 @@ pub fn run(id: &str) -> AppResult<()> {
     let monitor_id = id.to_owned();
     let monitor = thread::spawn(move || {
         let db = database();
-        let handle = process::exact_handle(&monitor_game, 0);
+        let handle = monitor_game.as_ref().map(|g| process::exact_handle(g, 0));
         while !monitor_done.load(Ordering::Relaxed) {
-            let should_stop = handle.as_ref().map_or(true, |h| unsafe { windows_sys::Win32::System::Threading::WaitForSingleObject(h.0, 0) } != windows_sys::Win32::Foundation::WAIT_TIMEOUT)
+            let should_stop = handle.as_ref().is_some_and(|result| result.as_ref().map_or(true, |h| unsafe { windows_sys::Win32::System::Threading::WaitForSingleObject(h.0, 0) } != windows_sys::Win32::Foundation::WAIT_TIMEOUT))
                 || db
                     .as_ref()
                     .map_or(true, |db| db.stop_requested(&monitor_id).unwrap_or(true));
@@ -132,11 +136,12 @@ pub fn run(id: &str) -> AppResult<()> {
     });
     let result = (|| {
         let mut backend = WindowsBackend::new(
-            Some(game.clone()),
+            game.clone(),
             s.plan.protected_paths.clone(),
             Some(cancel.clone()),
         )
         .map_err(|e| e.message)?;
+        backend.set_manual_mode(s.plan.manual_mode);
         if let Err(e) = engine::apply(&mut s, &mut backend, &mut db) {
             s.note(format!("Apply interrupted: {e}. Attempting recovery."));
             cancel.store(true, Ordering::Relaxed);

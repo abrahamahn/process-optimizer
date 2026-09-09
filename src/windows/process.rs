@@ -400,6 +400,7 @@ pub struct WindowsBackend {
     protected_paths: Vec<String>,
     guarded: HashSet<u32>,
     game: Option<Identity>,
+    manual_mode: bool,
     cancel: Option<Arc<AtomicBool>>,
 }
 
@@ -419,8 +420,12 @@ impl WindowsBackend {
             protected_paths,
             guarded,
             game,
+            manual_mode: false,
             cancel,
         })
+    }
+    pub fn set_manual_mode(&mut self, enabled: bool) {
+        self.manual_mode = enabled;
     }
     fn checked(&self, id: &Identity, rights: u32) -> NativeResult<Handle> {
         let h = exact_handle(id, rights)?;
@@ -464,7 +469,7 @@ impl Backend for WindowsBackend {
                 "Session cancelled or game no longer running.",
             ));
         }
-        if self.game.is_some() {
+        if self.game.is_some() || self.manual_mode {
             let settings = super::runner::database()
                 .and_then(|db| db.settings())
                 .map_err(|e| {
@@ -478,6 +483,9 @@ impl Backend for WindowsBackend {
                     self.protected_paths.push(path);
                 }
             }
+        }
+        if self.manual_mode {
+            let _ = super::manual::authorize_current_rule(id)?;
         }
         self.checked(id, 0).map(|_| ())
     }
@@ -567,6 +575,15 @@ impl Backend for WindowsBackend {
                 "Cancelled before native setter.",
             ));
         }
+        if self.manual_mode {
+            self.authorize(id)?;
+            if super::manual::authorize_current_rule(id)? != crate::manual::RuleAction::ReduceLoad {
+                return Err(Fault::new(
+                    FaultKind::Denied,
+                    "No saved permission for scheduling changes.",
+                ));
+            }
+        }
         let h = self.checked(id, PROCESS_SET_INFORMATION)?;
         let ok = match *value {
             Value::GpuPriority(priority) => {
@@ -622,6 +639,15 @@ impl Backend for WindowsBackend {
     }
     fn close(&mut self, id: &Identity, force: bool, timeout_ms: u32) -> NativeResult<CloseState> {
         self.authorize(id)?;
+        if self.manual_mode
+            && (force
+                || super::manual::authorize_current_rule(id)? != crate::manual::RuleAction::Close)
+        {
+            return Err(Fault::new(
+                FaultKind::Denied,
+                "Manual Game Mode permits only the approved normal-close operation.",
+            ));
+        }
         if force {
             // Direct force is a distinct reviewed action, never a WM_CLOSE fallback.
             let h = self.checked(id, PROCESS_TERMINATE)?;

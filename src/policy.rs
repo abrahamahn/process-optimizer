@@ -42,22 +42,37 @@ pub fn validate(plan: &Plan) -> AppResult<()> {
     if !plan.consent {
         return Err("Explicit session approval is required.".into());
     }
-    let game = plan
-        .game
-        .as_ref()
-        .ok_or("Select the exact running game, not a path or launcher.")?;
-    if !complete_identity(game)
-        || reserved_name(
-            normalized_path(&game.path)
-                .rsplit('\\')
-                .next()
-                .unwrap_or(""),
-        )
-    {
-        return Err("The game requires complete lifetime and executable evidence.".into());
-    }
-    if plan.game_path.trim().is_empty() {
-        return Err("Choose the actual game executable, not its launcher.".into());
+    if plan.manual_mode {
+        if plan.game.is_some()
+            || !plan.game_path.is_empty()
+            || plan.force_consent
+            || plan
+                .actions
+                .iter()
+                .any(|a| a.action == ActionKind::ForceClose || a.reopen.is_some())
+        {
+            return Err(
+                "Manual Game Mode has no game target, force action or automatic reopening.".into(),
+            );
+        }
+    } else {
+        let game = plan
+            .game
+            .as_ref()
+            .ok_or("Select the exact running game, not a path or launcher.")?;
+        if !complete_identity(game)
+            || reserved_name(
+                normalized_path(&game.path)
+                    .rsplit('\\')
+                    .next()
+                    .unwrap_or(""),
+            )
+        {
+            return Err("The game requires complete lifetime and executable evidence.".into());
+        }
+        if plan.game_path.trim().is_empty() {
+            return Err("Choose the actual game executable, not its launcher.".into());
+        }
     }
     if plan.actions.len() > 32 {
         return Err("At most 32 explicitly selected processes per session.".into());
@@ -92,7 +107,11 @@ pub fn validate(plan: &Plan) -> AppResult<()> {
         if !complete_identity(&item.target) {
             return Err("A selected process has no trustworthy identity.".into());
         }
-        if item.target.pid == game.pid {
+        if plan
+            .game
+            .as_ref()
+            .is_some_and(|game| item.target.pid == game.pid)
+        {
             return Err("The game PID cannot be an optimization target.".into());
         }
         let image = normalized_path(&item.target.path);
@@ -258,6 +277,7 @@ mod tests {
     }
     fn plan() -> Plan {
         Plan {
+            manual_mode: false,
             game_path: r"C:\Game\game.exe".into(),
             game: Some(Identity {
                 pid: 99,

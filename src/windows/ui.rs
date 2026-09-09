@@ -829,6 +829,7 @@ impl State {
             return Err("Select the actual running game using 'Use selected as game'. Browsing a path is not lifetime approval.".into());
         }
         let mut plan = Plan {
+            manual_mode: false,
             game_path: self.settings.game_path.clone(),
             game: self.game.clone(),
             actions: self.actions.values().cloned().collect(),

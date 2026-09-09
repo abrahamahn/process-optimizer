@@ -55,7 +55,7 @@ RecoveryRequired ----------> Restoring
 RecoveryRequired ----------> Acknowledged (explicit user review only)
 ```
 
-S-01: Attach mode requires a verified running game before accepting the plan and before each new action. If the game is already gone, do not apply anything. The first version does not guess launcher successors. Real game termination or explicit Restore stops new optimization and initiates restoration.
+S-01: Explicit attach mode requires a verified running game before accepting the plan and before each new action. If the game is already gone, do not apply anything. The first version does not guess launcher successors. Real game termination or explicit Restore stops new optimization and initiates restoration.
 
 S-02: Cancel during application is checked between bounded actions. An exact target that exits after whole-plan preflight is skipped as AlreadyGone without a native call; expected helper exits do not cancel the game session. Authorization revocation or game cancellation still stops new actions. An error after a native close call remains uncertain, never a harmless-exit inference. A delivered close request cannot be retracted; report that limitation. No additional targets are introduced after review. New processes are not automatically acted on.
 
@@ -132,3 +132,14 @@ No diagnostic uploads by default. Exports require explicit action and redaction 
 - [R4 SQLite atomic commit](https://www.sqlite.org/atomiccommit.html) and [synchronous pragma](https://www.sqlite.org/pragma.html#pragma_synchronous)
 
 State-machine choices are project contracts, not additional guarantees supplied by these APIs.
+
+
+## Manual session lifecycle (0.3.0)
+
+New schema-4 plans contain `manual_mode`. True requires no game identity/path, no force action or force consent and no app-reopen approval. False preserves existing attached-game validation. Schema-2/3 journals remain readable only with manual mode false; schema-2 cannot gain reopening permission. An old journal without the new field never acquires new behavior. Plans and original settings remain immutable.
+
+The manual worker observes durable Stop requests, not a synthetic process or the settings window. It sets no game lifetime and remains Active across unrelated game exits. A fresh recovery backend removes optimization/cancellation gates but retains exact identity and setting-ownership validation. Closing the UI does not terminate the worker. Worker death requires existing startup/manual recovery; no supervisor is invented.
+
+Recurring permissions use their own bounded, validated local SQLite record, separate from advanced settings, per-game recipes and recovery evidence. They are re-read before native manual actions, including operation matching. Revocation/expiry/file drift stops further work and triggers reconciliation. A rule authorizing Close does not authorize a priority write, and vice versa. Rules are evaluated once per user On into at most 32 current process lifetimes, never replayed against a new PID lifetime.
+
+Clock rollback before grant time and time at/after expiry fail closed. File stamps are compared, not treated as cryptographic identity. Desktop/file/foreground checks are conservative observations, not OS-wide atomic transactions. Manual mode mutates only explicitly approved background executables; it does not claim to recognize every game or every third-party dependency.

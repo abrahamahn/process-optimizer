@@ -24,7 +24,8 @@ impl Database {
         c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;
             CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, body TEXT NOT NULL, finished INTEGER NOT NULL, stop INTEGER NOT NULL DEFAULT 0, sequence INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS profiles (game_path TEXT PRIMARY KEY, body TEXT NOT NULL);").map_err(|e| e.to_string())?;
+            CREATE TABLE IF NOT EXISTS profiles (game_path TEXT PRIMARY KEY, body TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS manual_settings (id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL);").map_err(|e| e.to_string())?;
         c.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS one_unfinished_session ON sessions(finished) WHERE finished=0; PRAGMA user_version=1;").map_err(|e| e.to_string())?;
         Ok(Self { connection: c })
     }
@@ -103,7 +104,7 @@ impl Database {
         }
         let session: Session =
             serde_json::from_str(body).map_err(|e| format!("Unreadable recovery journal: {e}"))?;
-        if session.schema != SCHEMA_VERSION && session.schema != 2 {
+        if session.schema != SCHEMA_VERSION && session.schema != 2 && session.schema != 3 {
             return Err(
                 "Unsupported journal version. Preserve it for recovery with the matching version."
                     .into(),
@@ -184,6 +185,33 @@ impl Database {
         Ok(())
     }
 
+    pub fn manual_settings(&self) -> AppResult<crate::manual::Config> {
+        let body: Option<String> = self
+            .connection
+            .query_row("SELECT body FROM manual_settings WHERE id=1", [], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let config = match body {
+            Some(body) => {
+                if body.len() > 256 * 1024 {
+                    return Err("Game Mode settings are too large.".into());
+                }
+                serde_json::from_str(&body)
+                    .map_err(|e| format!("Invalid Game Mode settings: {e}"))?
+            }
+            None => crate::manual::Config::default(),
+        };
+        crate::manual::validate(&config)?;
+        Ok(config)
+    }
+    pub fn save_manual_settings(&self, config: &crate::manual::Config) -> AppResult<()> {
+        crate::manual::validate(config)?;
+        let body = serde_json::to_string(config).map_err(|e| e.to_string())?;
+        self.connection.execute("INSERT INTO manual_settings(id,body) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET body=excluded.body", [body]).map_err(|e| e.to_string())?;
+        Ok(())
+    }
     pub fn settings(&self) -> AppResult<Settings> {
         let body: Option<String> = self
             .connection
@@ -235,6 +263,7 @@ mod tests {
         Session::new(
             id.into(),
             Plan {
+                manual_mode: false,
                 game_path: r"C:\Game\game.exe".into(),
                 game: Some(Identity {
                     pid: 99,

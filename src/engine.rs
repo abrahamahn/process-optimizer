@@ -381,6 +381,7 @@ mod tests {
             provenance: fixture_provenance(),
         };
         let p = Plan {
+            manual_mode: false,
             game_path: r"C:\Game\game.exe".into(),
             game: Some(Identity {
                 pid: 99,

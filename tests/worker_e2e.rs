@@ -116,6 +116,7 @@ impl Harness {
         Session::new(
             process_optimizer::windows::runner::fresh_id(),
             Plan {
+                manual_mode: false,
                 game_path: game_id.path.clone(),
                 game: Some(game_id),
                 actions: vec![ApprovedAction {
@@ -370,4 +371,145 @@ fn existing_windowless_fixture_cannot_receive_generic_reopen_approval() {
     let background = h.spawn(false);
     let target = process::identity(background.0.id()).unwrap();
     assert!(process_optimizer::windows::reopen::approval(&target).is_err());
+}
+
+impl Harness {
+    fn manual_plan(&self, background: &OwnedChild) -> Session {
+        use process_optimizer::{
+            manual::{self, Config, RuleAction},
+            windows::manual as native,
+        };
+        let target = process::identity(background.0.id()).unwrap();
+        WindowsBackend::new(None, vec![], None)
+            .unwrap()
+            .write(&target, &Value::CpuPriority(0x20))
+            .unwrap();
+        let rule = manual::approve(
+            &target,
+            native::stamp(&target).unwrap(),
+            RuleAction::ReduceLoad,
+            native::now(),
+        )
+        .unwrap();
+        self.db()
+            .save_manual_settings(&Config {
+                schema: 1,
+                rules: vec![rule],
+            })
+            .unwrap();
+        Session::new(
+            process_optimizer::windows::runner::fresh_id(),
+            Plan {
+                manual_mode: true,
+                game_path: String::new(),
+                game: None,
+                actions: vec![ApprovedAction {
+                    target,
+                    action: ActionKind::LowerPriorities,
+                    reopen: None,
+                }],
+                protected_paths: vec![],
+                options: Options {
+                    cpu_priority: true,
+                    ..Options::default()
+                },
+                consent: true,
+                force_consent: false,
+                experimental_consent: false,
+            },
+        )
+    }
+}
+#[test]
+#[ignore = "requires an isolated, explicitly opted-in normal-user CI account"]
+fn manual_on_needs_no_game_and_remains_active_until_off() {
+    let h = Harness::new();
+    let mut game = h.spawn(true);
+    let background = h.spawn(false);
+    let s = h.manual_plan(&background);
+    let id = s.plan.actions[0].target.clone();
+    h.db().create(&s).unwrap();
+    let mut worker = h.worker(Some(&s.id));
+    h.stage(Stage::Active, &mut worker);
+    assert_eq!(priority(&id), Value::CpuPriority(0x4000));
+    assert!(h.db().get(&s.id).unwrap().game.is_none());
+    game.exit();
+    thread::sleep(Duration::from_millis(750));
+    assert!(!worker.done());
+    assert_eq!(h.db().get(&s.id).unwrap().stage, Stage::Active);
+    h.stop(&s.id);
+    h.stage(Stage::Restored, &mut worker);
+    assert_eq!(priority(&id), Value::CpuPriority(0x20));
+}
+#[test]
+#[ignore = "requires an isolated, explicitly opted-in normal-user CI account"]
+fn manual_crash_recovery_does_not_need_a_live_game() {
+    let h = Harness::new();
+    let background = h.spawn(false);
+    let s = h.manual_plan(&background);
+    let id = s.plan.actions[0].target.clone();
+    h.db().create(&s).unwrap();
+    let mut worker = h.worker(Some(&s.id));
+    h.stage(Stage::Active, &mut worker);
+    worker.exit();
+    let mut recovery = h.worker(None);
+    h.stage(Stage::Restored, &mut recovery);
+    assert_eq!(priority(&id), Value::CpuPriority(0x20));
+}
+#[test]
+#[ignore = "requires an isolated, explicitly opted-in normal-user CI account"]
+fn manual_worker_rechecks_revoked_permission_before_mutation() {
+    let h = Harness::new();
+    let background = h.spawn(false);
+    let s = h.manual_plan(&background);
+    let id = s.plan.actions[0].target.clone();
+    h.db().create(&s).unwrap();
+    h.db()
+        .save_manual_settings(&process_optimizer::manual::Config::default())
+        .unwrap();
+    let mut worker = h.worker(Some(&s.id));
+    let result = h.stage(Stage::Restored, &mut worker);
+    assert!(result.changes.is_empty());
+    assert_eq!(priority(&id), Value::CpuPriority(0x20));
+}
+#[test]
+#[ignore = "requires an isolated, explicitly opted-in normal-user CI account"]
+fn manual_worker_closes_only_a_preapproved_normal_gui() {
+    use process_optimizer::{
+        manual::{self, Config, RuleAction},
+        windows::manual as native,
+    };
+    let h = Harness::new();
+    let exe = h.root.join("reopen-fixture.exe");
+    std::fs::copy(&h.fixture, &exe).unwrap();
+    let mut gui = OwnedChild(Command::new(exe).spawn().unwrap());
+    let target = process::identity(gui.0.id()).unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    while process_optimizer::windows::reopen::approval(&target).is_err() {
+        assert!(Instant::now() < until);
+        thread::sleep(Duration::from_millis(50));
+    }
+    let mut s = h.manual_plan(&gui);
+    s.plan.options = Options::default();
+    s.plan.actions[0].action = ActionKind::Close;
+    let rule = manual::approve(
+        &target,
+        native::stamp(&target).unwrap(),
+        RuleAction::Close,
+        native::now(),
+    )
+    .unwrap();
+    h.db()
+        .save_manual_settings(&Config {
+            schema: 1,
+            rules: vec![rule],
+        })
+        .unwrap();
+    h.db().create(&s).unwrap();
+    let mut worker = h.worker(Some(&s.id));
+    let active = h.stage(Stage::Active, &mut worker);
+    assert_eq!(active.closed[0].state, CloseState::ClosedGracefully);
+    assert!(gui.done());
+    h.stop(&s.id);
+    h.stage(Stage::Restored, &mut worker);
 }

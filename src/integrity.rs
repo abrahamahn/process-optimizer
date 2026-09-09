@@ -24,10 +24,10 @@ pub fn uncertain_close(state: &CloseState) -> bool {
 }
 
 pub fn validate_record(s: &Session) -> AppResult<()> {
-    if s.schema != SCHEMA_VERSION
-        && !(s.schema == 2
-            && s.plan.actions.iter().all(|a| a.reopen.is_none())
-            && s.reopened.is_empty())
+    if (s.schema != SCHEMA_VERSION && s.schema != 2 && s.schema != 3)
+        || (s.schema < 4 && s.plan.manual_mode)
+        || (s.schema == 2
+            && (s.plan.actions.iter().any(|a| a.reopen.is_some()) || !s.reopened.is_empty()))
     {
         return Err("Unsupported recovery schema; preserve it for the matching build.".into());
     }

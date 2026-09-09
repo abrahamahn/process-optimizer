@@ -75,6 +75,14 @@ Compatibility matrix includes supported Windows 11 builds; single dGPU and hybri
 
 The native worker and portable executable are a development alpha, not completion of every acceptance gate. Driver development, security disabling, power/overclock control and permanent debloating remain outside scope.
 
+## Simple-mode acceptance additions (0.3.0)
+
+Default UI: On/Off and Settings only; no game-path input. Settings is hidden until opened and returns to compact mode with Done. Native smoke must exercise both views and the retained advanced screen. A read-only synthetic preview contains no user inventory.
+
+Tests must prove: no game needed; unrelated game exits do not end manual mode; Off restores; worker interruption can recover without a game; missing/expired/revoked permissions cannot mutate; normal close cannot become force/reopen; changed file/owner/session and protected groups do not match; empty matches are labeled no-op; expansion is bounded; older schema-2/3 journals retain their original behavior. End-to-end tests use only fixture processes under the disposable normal account.
+
+Current 0.3.0 validation is pending until an actual Windows run is recorded. Earlier evidence below applies to those earlier versions only.
+
 ## Recorded evidence
 
 ### Version 0.2.0 application workflows, 2026-09-09

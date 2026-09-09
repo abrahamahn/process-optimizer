@@ -49,6 +49,7 @@ fn session() -> Session {
     Session::new(
         "fixture-session".into(),
         Plan {
+            manual_mode: false,
             game_path: id(99, "game").path.clone(),
             game: Some(id(99, "game")),
             actions: vec![action()],

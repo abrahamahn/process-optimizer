@@ -6,15 +6,17 @@ Rust + Win32. No web runtime, overclocking, permanent debloat, kernel driver, ga
 
 **Development alpha, not a proven FPS booster.** Native code and deterministic/Windows fixture tests are implemented. Actual gaming GPU compatibility, game/anti-cheat behavior and performance improvements remain unmeasured. See [validation evidence](specs/04-validation-and-delivery.md#recorded-evidence).
 
-## New in 0.2.0 — application workflows
+## New in 0.3.0 — just Game Mode ON / OFF
 
-**Select same app** expands a finite group with the same executable file, user, logon and Windows session. Review the rows and choose an action; different executables and future processes are not automatically included. This is executable grouping, not a claim that every helper belongs to the same app.
+The default window now has **Turn ON / Turn OFF** and **Settings**. There is no game browser or game-process selection. You can switch it on before opening Steam, start or switch games normally, then switch it off when finished. Game exit does not switch off a manual session.
 
-**Save / Load game profile** stores a local recipe for the selected game. Loading explicitly rebuilds a preview from current process identities. Replaced executable file identities and protected groups are omitted or rejected with an explanation. Profiles bind file IDs, not cryptographic content hashes; in-place updates still require your fresh review. No profile is auto-activated. Force permission, app-reopening approval and experimental GPU approval are never saved. A profile may expand to more current processes than the original selection; review every row. Profiles can be replaced or deleted without deleting recovery records.
+**First use only:** open Settings, choose optional background apps, and approve **Allow normal close** or **Reduce background load**. A separate confirmation explains that each future user-initiated On may apply that action to current processes of the unchanged executable for 30 days. Keep removes the permission. Detected file updates and expired approvals require review. No app is preapproved and no unknown process is killed automatically.
 
-**Reopen after close...** separately approves one main GUI process already marked **Close gracefully**. After a verified graceful closure, restoration may start the unchanged executable once, normally and without arguments. Console jobs, interpreters, helpers without a top-level window, changed files and possible existing instances are excluded. Locked, disconnected or unverifiable desktops defer reopening to the user. A crash around launch leaves an explicit uncertain result, never a blind retry. Reopening does not recover tabs, documents, unsaved work or memory. Toggle the same control again to remove permission before Start.
+**After setup:** Turn ON → play → Turn OFF. Settings remembers permissions, not game paths. Cleanup runs once at On; apps you reopen or launch later are not repeatedly closed. With no running matches, the screen explicitly says nothing changed. Off restores our eligible settings, not closed apps or unsaved documents.
 
-**Show last report** now separates settings, close requests and reopening outcomes in readable text. It does not present app reopening as undoing a shutdown.
+Reduce load uses supported CPU, EcoQoS and memory priorities. GPU scheduling remains an experimental, separately approved option for the next activation only. Actual GPU contention reduction can come from normal-closing your approved GPU-using apps; scheduling preference is not a GPU ban.
+
+The old process grid, per-game recipes and optional reopening remain available under **Settings > Advanced tools**. They are no longer the default workflow. Advanced attached sessions still restore when their selected game exits; manual sessions run until Off. The two modes share the same single-session and recovery protections.
 
 ## Current implementation
 
@@ -39,12 +41,10 @@ A successful **Windows** GitHub Actions run produces `process-optimizer-windows-
 
 **Run normally, not as administrator. Save open work first.** Starting the application only observes; no background processes are preselected for closure and experimental GPU scheduling is off by default.
 
-1. Start the game through Steam or its normal launcher. Open Process Optimizer and choose **Refresh GPU / processes**.
-2. Select the actual game process and choose **Use selected as game**. A launcher or a browsed executable path is not a substitute for the running game lifetime.
-3. Select optional background processes with Ctrl/Shift. **Select same app** can expand the selection first; inspect its rows, then assign **Close gracefully**, **Lower priorities**, or the separately confirmed **Force terminate** action. Use **Keep** or protection for anything essential.
-4. Before Start, optionally **Save / Load game profile**, or separately approve **Reopen after close...** for one main GUI process already marked **Close gracefully**. Saving and loading prepare a recipe and an unsent preview, never authorization or unattended activation.
-5. Inspect the exact plan and choose **START GAME SESSION**. Lower-priority actions require an explicitly selected policy. GPU scheduling prompts for additional experimental consent; force termination has its own target-specific confirmation.
-6. **Restore now** stops further optimization and restores eligible settings. If the controller died, it starts journal recovery. **Show last report** distinguishes restoration, exited targets, pending close requests and conflicts.
+1. Extract the ZIP and open `process-optimizer.exe` normally, not as administrator.
+2. For first-use permissions, open **Settings**. Choose optional background apps, confirm a normal-close or Reduce load rule, then select **Done**. Do not approve games or apps needed for voice, accessibility, controllers or device management.
+3. Press **Turn ON**. No game selection is needed. Start your game normally.
+4. When finished, press **Turn OFF**. **Settings > Session details** contains exact outcomes; **Advanced tools** preserves the earlier explicit session controls.
 
 Closing the UI does not abandon a running session: the independent controller remains. Alt-Tab/minimization is not game exit. If the controller itself crashes, immediate unattended recovery is not guaranteed; reopen the UI and choose **Restore now**. **Keep current / clear warning** explicitly acknowledges unresolved items; it is not a successful restoration.
 
@@ -56,11 +56,11 @@ A snapshot records our settings and action intent, **not machine/process/GPU mem
 
 **GUI reopening is optional and narrowly gated, not general application-state restoration.** General cooperative GPU-pause adapters, service/CPU-Set policies, automatic Steam launcher handoff, unattended per-game activation, a recovery supervisor and an installer remain unavailable. Unavailable launch is visibly disabled; no unsupported shortcut is used in its place.
 
-State stays under `%LOCALAPPDATA%\ProcessOptimizer`. Do not delete it during an active/unresolved session. New session records use schema 3 for separate reopening approval and outcomes. Schema-2 records remain recoverable without acquiring the new launch capability. Other unsupported/corrupt/future records fail closed and are preserved; never remove it merely to suppress a recovery warning. Protection is conservative but cannot infer every third-party dependency: the user must review which optional targets are genuinely nonessential.
+State stays under `%LOCALAPPDATA%\ProcessOptimizer`. Do not delete it during an active/unresolved session. New records use schema 4 to distinguish manual and game-attached sessions. Schema-2/3 records remain recoverable without acquiring the new manual-mode behavior. Other unsupported/corrupt/future records fail closed and are preserved; never remove it merely to suppress a recovery warning. Protection is conservative but cannot infer every third-party dependency: the user must review which optional targets are genuinely nonessential.
 
-## Upgrade from 0.1.x
+## Upgrade from 0.1.x / 0.2.x
 
-Finish the old session with **Restore now**, inspect the report, and close the old UI before replacing the executable. Do not delete `%LOCALAPPDATA%\ProcessOptimizer`: it contains recovery evidence. Version 0.2.0 reads and restores schema-2 sessions without granting them any new reopening permission; new sessions use schema 3. Corrupt or unsupported records remain preserved rather than silently reset. App reopening starts a new process and cannot recover unsaved work.
+Finish the old session with **Restore now**, inspect the report, and close the old UI before replacing the executable. Do not delete `%LOCALAPPDATA%\ProcessOptimizer`: it contains recovery evidence. Version 0.3.0 reads and restores schema-2/3 sessions without granting them new permissions; new sessions use schema 4. Corrupt or unsupported records remain preserved rather than silently reset. App reopening starts a new process and cannot recover unsaved work.
 
 ## Build from source
 

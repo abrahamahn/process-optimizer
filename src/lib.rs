@@ -4,6 +4,7 @@ pub mod engine;
 pub mod gpu;
 pub mod integrity;
 pub mod journal;
+pub mod manual;
 pub mod model;
 pub mod policy;
 pub mod profiles;
