@@ -1,0 +1,67 @@
+name: Apply settings controls v0.4.1
+on:
+  push:
+    branches: [codex/settings-controls-v041-impl3]
+    paths:
+      - scripts/apply_settings_controls_v041.py
+      - .github/workflows/apply-settings-v041.yml
+permissions:
+  contents: write
+jobs:
+  apply-and-verify:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Apply reviewed settings-control patch
+        shell: pwsh
+        run: python scripts/apply_settings_controls_v041.py
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.90.0 --profile minimal --component clippy --component rustfmt
+      - name: Format and test
+        shell: pwsh
+        run: |
+          cargo fmt --all
+          if ($LASTEXITCODE -ne 0) { throw 'Formatting failed' }
+          cargo test --locked --all-targets -- --nocapture
+          if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
+          cargo test --locked --test windows_contract -- --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { throw 'Disposable force fixture failed' }
+          cargo clippy --locked --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Clippy failed' }
+          cargo build --locked --release --bin process-optimizer
+          if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }
+          ./scripts/check-portable.ps1
+      - name: Standard-user lifecycle fixtures
+        shell: pwsh
+        run: ./scripts/ci-normal-user.ps1
+      - name: Native UI smoke and read-only GPU probe
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path target/release/process-optimizer.exe).Path
+          foreach ($mode in @('--ui-smoke','--advanced-smoke')) {
+            $p = Start-Process -FilePath $exe -ArgumentList $mode -PassThru
+            if (-not $p.WaitForExit(30000)) { $p.Kill(); throw "Our $mode timed out" }
+            if ($p.ExitCode -ne 0) { throw "Native $mode failed" }
+          }
+          New-Item -ItemType Directory -Force review | Out-Null
+          $probe = Join-Path $pwd 'review/ci.probe.json'
+          $p = Start-Process -FilePath $exe -ArgumentList @('--probe',$probe) -PassThru
+          if (-not $p.WaitForExit(30000)) { $p.Kill(); throw 'Read-only GPU probe timed out' }
+          if ($p.ExitCode -ne 0) { throw 'Read-only GPU probe failed' }
+          Remove-Item $probe
+      - name: Commit verified implementation only
+        shell: pwsh
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/windows/simple_ui.rs
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 1) {
+            git commit -m 'feat: make app cleanup choices reversible and safety-labeled'
+            if ($LASTEXITCODE -ne 0) { throw 'Commit failed' }
+            git push origin HEAD:refs/heads/codex/settings-controls-v041-impl3
+            if ($LASTEXITCODE -ne 0) { throw 'Push failed' }
+          } elseif ($LASTEXITCODE -ne 0) {
+            throw 'Could not inspect staged changes'
+          }
