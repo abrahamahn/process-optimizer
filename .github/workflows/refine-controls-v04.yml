@@ -13,11 +13,13 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Apply reviewed control refinement
         run: python scripts/refine_controls_v04.py
-      - name: Use local Win32 owner-draw ABI declarations
+      - name: Normalize Win32 owner-draw ABI and final source shape
         shell: pwsh
         run: |
           $py = @'
           from pathlib import Path
+          import re
+
           p = Path('src/windows/simple_ui.rs')
           text = p.read_text(encoding='utf-8')
           marker = 'const ES_READONLY_STYLE: u32 = 0x0800;\n'
@@ -36,11 +38,23 @@ jobs:
               'item.rcItem': 'item.rc_item',
               'ODS_SELECTED as u32': '0x0001u32',
               'ODS_FOCUS as u32': '0x0010u32',
+              '(DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS) as u32': 'DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS',
+              '.sort_by_key(|c| (!c.essential, c.name.to_lowercase()));': '.sort_by_key(|c| ((c.protected || c.essential), c.essential, c.name.to_lowercase()));',
           }
           for old, new in replacements.items():
               if old not in text:
-                  raise RuntimeError(f'expected owner-draw token missing: {old}')
+                  raise RuntimeError(f'expected final-shape token missing: {old}')
               text = text.replace(old, new)
+
+          match = re.search(
+              r'(?s)(#\[cfg\(test\)\]\nmod recommendation_tests \{.*?\n\}\n\n)(pub fn run\(\) -> AppResult<\(\)> \{)',
+              text,
+          )
+          if not match:
+              raise RuntimeError('recommendation test module placement marker missing')
+          block = match.group(1)
+          text = text[:match.start(1)] + text[match.end(1):]
+          text = text.rstrip() + '\n\n' + block
           p.write_text(text, encoding='utf-8', newline='\n')
           '@
           $py | python -
