@@ -21,9 +21,11 @@ ALLOWED = {
     "tests/manual_mode.rs",
     "tests/windows_hardening.rs",
 }
+
 raw = ARCHIVE.read_bytes()
 if hashlib.sha256(raw).hexdigest() != EXPECTED:
     raise RuntimeError("v0.4 source archive checksum mismatch")
+
 with tarfile.open(ARCHIVE, "r:xz") as tf:
     members = tf.getmembers()
     names = {m.name for m in members}
@@ -38,4 +40,5 @@ with tarfile.open(ARCHIVE, "r:xz") as tf:
             raise RuntimeError(f"Missing archive data: {member.name}")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(source.read())
+
 print("Applied checksum-pinned v0.4 source payload.")
