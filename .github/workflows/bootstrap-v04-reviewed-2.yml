@@ -1,4 +1,4 @@
-# retry reviewed source bootstrap 2026-09-10 (module-safe SetFocus import)
+# bootstrap reviewed v0.4 source into branch; normal CI performs verification
 name: Bootstrap reviewed v0.4 source (verified)
 on:
   push:
@@ -9,94 +9,76 @@ permissions:
 jobs:
   bootstrap:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     env:
       GITHUB_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - name: Restore reviewed implementation source when needed
+      - name: Restore and normalize reviewed implementation source
         shell: pwsh
         run: |
-          $needsRestore = -not (Select-String -Path src/windows/simple_ui.rs -Pattern 'const PERMANENT:' -Quiet)
-          if ($needsRestore) {
-            $headers = @{
-              Authorization = "Bearer $env:GITHUB_TOKEN"
-              Accept = "application/vnd.github+json"
-              "X-GitHub-Api-Version" = "2022-11-28"
-            }
-            Invoke-WebRequest -Uri "https://api.github.com/repos/abrahamahn/process-optimizer/actions/artifacts/10112844022/zip" -Headers $headers -OutFile bootstrap.zip
-            Expand-Archive bootstrap.zip bootstrap -Force
-            $nested = Get-ChildItem bootstrap -Recurse -Filter 'v04-source.zip' | Select-Object -First 1
-            if (-not $nested) { throw 'Reviewed v0.4 source archive missing' }
-            Expand-Archive $nested.FullName reviewed -Force
-            foreach ($dir in @('src','tests')) {
-              if (-not (Test-Path (Join-Path reviewed $dir))) { throw "Missing reviewed $dir" }
-              Remove-Item $dir -Recurse -Force
-              Copy-Item (Join-Path reviewed $dir) $dir -Recurse
-            }
-            Copy-Item reviewed/Cargo.toml Cargo.toml -Force
+          $headers = @{
+            Authorization = "Bearer $env:GITHUB_TOKEN"
+            Accept = "application/vnd.github+json"
+            "X-GitHub-Api-Version" = "2022-11-28"
           }
-          if (-not (Select-String -Path src/windows/simple_ui.rs -Pattern 'const PERMANENT:' -Quiet)) { throw 'Permanent cleanup UI source not present' }
-          if (-not (Test-Path src/windows/startup.rs)) { throw 'Startup adapter missing' }
-          $ui = Get-Content src/windows/simple_ui.rs -Raw
-          $doc = '//! Small native front door: On/Off first, app permissions behind Settings.'
-          $import = 'use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;'
-          if (-not $ui.Contains($import)) {
-            if (-not $ui.Contains($doc)) { throw 'Reviewed module header changed unexpectedly' }
-            $ui = $ui.Replace($doc, $doc + "`r`n" + $import)
-            Set-Content src/windows/simple_ui.rs -Value $ui -Encoding utf8 -NoNewline
+          Invoke-WebRequest -Uri "https://api.github.com/repos/abrahamahn/process-optimizer/actions/artifacts/10112844022/zip" -Headers $headers -OutFile bootstrap.zip
+          Expand-Archive bootstrap.zip bootstrap -Force
+          $nested = Get-ChildItem bootstrap -Recurse -Filter 'v04-source.zip' | Select-Object -First 1
+          if (-not $nested) { throw 'Reviewed v0.4 source archive missing' }
+          Expand-Archive $nested.FullName reviewed -Force
+          foreach ($dir in @('src','tests')) {
+            if (-not (Test-Path (Join-Path reviewed $dir))) { throw "Missing reviewed $dir" }
+            Remove-Item $dir -Recurse -Force
+            Copy-Item (Join-Path reviewed $dir) $dir -Recurse
           }
-      - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy
-      - name: Resolve, format, and test
+          Copy-Item reviewed/Cargo.toml Cargo.toml -Force
+          $py = @'
+          from pathlib import Path
+          import re
+
+          ui = Path('src/windows/simple_ui.rs')
+          text = ui.read_text(encoding='utf-8')
+          doc = '//! Small native front door: On/Off first, app permissions behind Settings.'
+          imp = 'use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;'
+          if imp not in text:
+              if doc not in text:
+                  raise RuntimeError('Reviewed module header changed unexpectedly')
+              text = text.replace(doc, doc + '\n' + imp, 1)
+          ui.write_text(text, encoding='utf-8', newline='\n')
+
+          for file, expected in [('tests/manual_mode.rs', 1), ('tests/worker_e2e.rs', 2)]:
+              p = Path(file)
+              text = p.read_text(encoding='utf-8')
+              text, count = re.subn(r'(?m)^(\s*)schema: 1,\s*$', r'\1schema: 1,\n\1startup_disabled: vec![],', text)
+              if count != expected:
+                  raise RuntimeError(f'{file}: expected {expected} Config schema initializer(s), got {count}')
+              p.write_text(text, encoding='utf-8', newline='\n')
+
+          if 'const PERMANENT:' not in ui.read_text(encoding='utf-8'):
+              raise RuntimeError('Permanent cleanup UI source not present')
+          if not Path('src/windows/startup.rs').exists():
+              raise RuntimeError('Startup adapter missing')
+          '@
+          $py | python -
+      - name: Install pinned Rust formatting toolchain
+        run: rustup toolchain install 1.90.0 --profile minimal --component rustfmt
+      - name: Resolve and format source
         shell: pwsh
         run: |
           cargo generate-lockfile
           if ($LASTEXITCODE -ne 0) { throw 'Lockfile failed' }
           cargo fmt --all
           if ($LASTEXITCODE -ne 0) { throw 'Format failed' }
-          cargo test --locked --all-targets -- --nocapture
-          if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
-          cargo test --locked --test windows_contract -- --ignored --nocapture
-          if ($LASTEXITCODE -ne 0) { throw 'Force fixture failed' }
-          cargo clippy --locked --all-targets -- -D warnings
-          if ($LASTEXITCODE -ne 0) { throw 'Clippy failed' }
-          cargo build --locked --release --bin process-optimizer
-          if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }
-          ./scripts/check-portable.ps1
-      - name: Standard-user lifecycle fixtures
-        shell: pwsh
-        run: ./scripts/ci-normal-user.ps1
-      - name: Native UI smoke and read-only GPU probe
+      - name: Commit normalized source for normal CI
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force review | Out-Null
-          $exe = (Resolve-Path target/release/process-optimizer.exe).Path
-          foreach ($mode in @('--ui-smoke','--advanced-smoke')) {
-            $p = Start-Process -FilePath $exe -ArgumentList $mode -PassThru
-            if (-not $p.WaitForExit(30000)) { $p.Kill(); throw "Our $mode timed out" }
-            if ($p.ExitCode -ne 0) { throw "Native $mode failed" }
-          }
-          $probe = Join-Path $pwd 'review/ci.probe.json'
-          $p = Start-Process -FilePath $exe -ArgumentList @('--probe',$probe) -PassThru
-          if (-not $p.WaitForExit(30000)) { $p.Kill(); throw 'Read-only GPU probe timed out' }
-          if ($p.ExitCode -ne 0) { throw 'Read-only GPU probe failed' }
-          Remove-Item $probe
-      - name: Commit verified implementation and marker
-        shell: pwsh
-        run: |
-          Set-Content -Path V04_VERIFIED.txt -Value @(
-            'Process Optimizer v0.4 implementation verification',
-            'Windows hosted tests: passed before this marker was committed.',
-            'Scope: source/tests/build/native UI smoke/standard-user lifecycle fixtures.',
-            'This is not a physical gaming-performance benchmark.'
-          ) -Encoding utf8
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add Cargo.toml Cargo.lock src tests V04_VERIFIED.txt
+          git add Cargo.toml Cargo.lock src tests
           git diff --cached --quiet
           if ($LASTEXITCODE -eq 1) {
-            git commit -m 'feat: verify two-mode cleanup and copyable process diagnostics'
+            git commit -m 'feat: stage two-mode cleanup and copyable process diagnostics'
             if ($LASTEXITCODE -ne 0) { throw 'Commit failed' }
             git push origin HEAD:refs/heads/codex/cleanup-ui-v04
             if ($LASTEXITCODE -ne 0) { throw 'Push failed' }
