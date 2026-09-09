@@ -40,6 +40,16 @@ Owners: [product](01-product.md), [policy](02-gpu-and-process-policy.md), [recov
 | GPU-driver reset / sleep / display switch | Invalidate capability/telemetry, stop unsafe pending actions, reconcile remaining owned settings |
 | Multi-user / RDP session | Reject another user's targets; scopes do not merge |
 | Duplicate session request | Exactly one active controller/journal ownership; return existing status or reject |
+| Executable group selection | Finite current file/user/logon/session identities only; no implicit future-process rule |
+| Target helper exits after preflight | Skip the exact exited target without cancelling the game session or sending another close |
+| Profile load | New unapproved preview; no retained force, reopening or experimental permission |
+| Profile expands beyond the limit | Reject entirely, never silently truncate the reviewed plan |
+| Profile executable was replaced | Omit/reject changed file IDs; same-file updates still need fresh user review |
+| Protected profile group | Exclude the protected group and explain it |
+| GUI reopening without verified graceful closure | No launch |
+| GUI reopening with changed stamp, existing instance or unavailable desktop | Explicit skipped/already-running/deferred result; no guessed startup |
+| Interruption across GUI launch | Preserve uncertainty and never blindly repeat the launch |
+| Upgrade with a stored schema-2 session | Read and recover the existing record, without granting new reopening permission |
 
 Native mutation tests MUST use child fixtures created and owned by the test harness. They MUST NOT search for or close arbitrary desktop programs. Force-kill fixtures require an explicit opt-in test command, separate from the default suite. Read-only probe and native-window smoke checks may run in hosted Windows CI, but do not constitute a real-GPU performance test.
 
@@ -59,63 +69,58 @@ Compatibility matrix includes supported Windows 11 builds; single dGPU and hybri
 | --- | --- | --- |
 | 1. First full session | Native UI, GPU inspection, exact process selection, close/force distinction, consent, journal and restore controls | Deterministic consent/recovery tests, native owned-fixture integration tests, native-window smoke |
 | 2. Game lifecycle and resilience | Already-running game attachment, independent controller, durable cancellation, identity-safe reverse recovery, single controller/store and private state | Fault-injection and duplicate/cancellation tests plus non-admin production-worker lifecycle tests; physical sleep/reboot/logoff/driver-reset matrix remains open |
-| 3. Low-level resource policies | GPU scheduling is experimental opt-in; CPU, EcoQoS and memory policies individually optional where query/apply/verify are supported | Per-adapter/driver real-machine capability + rollback evidence before recommending GPU policy; no guaranteed benefit from API success |
+| 3. Low-level resource policies | GPU scheduling is experimental opt-in; CPU, EcoQoS and memory policies individually optional where query/apply/verify are supported | Per-adapter/driver real-machine capability and rollback evidence before recommending GPU policy; no guaranteed benefit from API success |
 | 4. Application-aware management | Explicit executable groups, per-game recipe save/load/delete, separately approved GUI reopening and readable reports; whole-app/cooperative adapters remain absent | Product-workflow regression tests and native fixture/desktop checks; real applications and physical desktop transitions remain separate gates |
-| 5. Verified performance | Paired game benchmark capture/reporting and hardware matrix | Not yet performed on physical gaming hardware |
+| 5. Verified performance | Measurement protocol specified; capture/report tooling and gaming measurements remain outstanding | Repeated paired gaming measurements and physical hardware compatibility evidence |
 
 The native worker and portable executable are a development alpha, not completion of every acceptance gate. Driver development, security disabling, power/overclock control and permanent debloating remain outside scope.
 
 ## Recorded evidence
 
-### Native lifecycle baseline, 2026-09-09
+### Version 0.2.0 application workflows, 2026-09-09
 
-[Main run 34334379794](https://github.com/abrahamahn/process-optimizer/actions/runs/34334379794) tested source `f5809b598f28912b3b3aec543b6c814ef642b336`. The workflow ran on GitHub-hosted Windows Server 2025 **10.0.26100**, x64 MSVC, Rust **1.90.0**, with a separate Linux logic-check job. This is not the user's gaming PC.
+[Validation run 34340104981](https://github.com/abrahamahn/process-optimizer/actions/runs/34340104981) tested the complete reviewed application changes and committed the exact formatted source as `2383a72878cd3f0f83a8771c53df3bc80ba14808`. This includes the database upgrade and expected-helper-exit corrections, not just the initial feature patch.
 
-| Executed check in that Windows job | Result |
+Environment: GitHub-hosted Windows Server 2025 **10.0.26100**, x64 MSVC, Rust **1.90.0**. This was not the user's gaming PC.
+
+| Executed check | Observed result |
 | --- | --- |
-| Library unit suite | 35 passed |
-| Behavioral contract suite | 17 passed |
-| Native Windows contract suite | 7 passed; force test excluded from the default invocation |
-| Explicit fixture-force invocation | 1 passed, only on the child created by that test |
-| Native provenance/storage/lock suite | 4 passed |
-| Production-worker lifecycle under a disposable non-admin account | 6 passed with no privilege bypass in the application |
-| `cargo fmt --all -- --check` | Passed |
-| `cargo clippy --locked --all-targets -- -D warnings` | Passed, no warnings |
-| Release build, native-window smoke, read-only GPU probe and portable packaging | Passed |
-
-**70 executed, passing test cases** across those Windows test invocations. The six end-to-end cases exercise actual game-fixture exit, manual restoration while the game stays alive, recovery after the owned worker is forcibly interrupted, cancellation before preparation, rejection of a duplicate worker, and a restarted background process not inheriting the original lifetime's settings. Fixtures establish and verify a known CPU-priority baseline so an unchanged already-low setting cannot falsely satisfy a round-trip test.
-
-The end-to-end suite is ignored in ordinary local runs. `scripts/ci-normal-user.ps1` is guarded for isolated GitHub Windows CI; it creates and removes its own standard account, uses isolated stores and owned disposable binaries, and explicitly opts in to those six cases. It never changes an existing user account or searches for real user applications to terminate.
-
-### Recovery ownership audit, 2026-09-09
-
-[Audit run 34334785243](https://github.com/abrahamahn/process-optimizer/actions/runs/34334785243) applied the checksum-verified recovery patch to the reviewed `a78ae1dce066d1a3e5d8b816c98373f62225bee8` baseline and committed the exact formatted/tested source as `84c712bc3917ad3fd33f8388663774f5e625b926`. Environment: GitHub-hosted Windows Server 2025 **10.0.26100**, x64 MSVC, Rust **1.90.0**.
-
-| Executed check in the audit job | Result |
-| --- | --- |
-| Library unit suite | 35 passed |
-| Existing behavioral-contract suite | 17 passed |
-| New recovery-ownership and journal-integrity suite | 15 passed |
-| Native Windows contract suite | 8 passed; force test excluded from default invocation |
+| Library and database unit tests | 36 passed |
+| Existing behavioral-contract tests | 17 passed |
+| Application-group, profile, reopening and report tests | 29 passed |
+| Recovery ownership and persistence-boundary tests | 15 passed |
+| Native Windows contract tests | 8 passed; force case ignored in default invocation |
 | Separately opted-in force fixture | 1 passed |
-| Native provenance/storage/lock suite | 4 passed |
-| `cargo clippy --locked --all-targets -- -D warnings` | Passed without warnings |
-| Release build, native-window creation and read-only GPU probe | Passed |
+| Native provenance, storage and locking tests | 4 passed |
+| Production-worker lifecycle under disposable standard account | 8 passed |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed without Rust/Clippy warnings |
+| Release build and portable-runtime import inspection | Passed; no external Visual C++ runtime DLL dependency |
+| Native-window smoke and read-only PDH collector | Passed |
 
-**80 executed, passing test cases** in that audit. Its 15 new deterministic scenarios cover cancellation or external drift before a setter, another actor independently choosing our intended value, cancellation before any close request, persistence failures at each apply/restore boundary, a competing writer after restore intent, persistent ownership conflicts, ambiguous native effects stopping later actions, invalid values, changed approvals/originals, missing game/provenance, duplicate or out-of-plan properties, and falsely completed records. A new native fixture test checks cancellation again inside the setter.
+**118 executed passing test cases** across the separate Windows invocations; ignored cases are counted only when actually executed by their opt-in invocation, not twice.
 
-The audit did not include the concurrently added six production-worker lifecycle tests or static-runtime packaging change. Integration preserves those newer files and runs the normal full CI on the resulting main commit; do not count a planned integration as a passing run. Deterministic effect simulation is not exhaustive hardware power-loss testing.
+The GUI-reopening worker case **actually created the new test GUI process and verified its new identity** on this run. It was not a Deferred-only success. The test first rejected an altered executable stamp, verified graceful closure, ended the owned game fixture, then verified the reopened process and cleaned up that exact child. A separate worker test rejects generic reopening for a windowless fixture. On other hosted desktops the same test may report Deferred; those runs must not be described as successful native launches.
 
-### Capability and package boundaries
+The other worker cases cover game exit with no UI, manual restore while the game remains alive, recovery after forcible interruption of the owned worker, durable cancellation before apply, duplicate-controller rejection and replacement processes not receiving old settings. Fixtures establish a known CPU-priority baseline so a no-op cannot falsely satisfy the round trip.
 
-The native GPU scheduling query returned unavailable (`NTSTATUS 0xc0000022`) on these hosted runs, and its safe-fallback test passed. **This does not establish GPU priority application or gaming benefit.** The read-only PDH probe produced parseable measurements/provider status; hosted-provider availability is not physical gaming-GPU validation.
+The 29 product cases cover finite grouping, owner/logon/file identity and bounds; fresh profile expansion, protected groups, replaced executables, invalid or mixed recipes, storage replacement/deletion/count limits and absence of remembered approvals; optional reopening consent, verified closure, desktop/existing-instance/changed-file outcomes, persistence failure before or after launch, no duplicate launch after interruption, immutable evidence, complete reporting and expected helper exits versus real cancellation.
 
-Subsequent main runs repeat all committed tests and emit a source-identified ZIP, executable checksum and package checksum. Windows x64 packaging uses a statically linked C runtime, configured in `.cargo/config.toml`; `scripts/check-portable.ps1` checks the actual release import table for external Visual C++ runtime DLL dependencies before packaging. The [Rust linkage reference](https://doc.rust-lang.org/reference/linkage.html#static-and-dynamic-c-runtimes) documents the mechanism. Runtime-linkage changes still require the normal Windows checks to pass; flags alone are not proof of a portable binary.
+The database upgrade test reads an actual stored schema-2 JSON body with the new field absent through `get`, `latest` and `active`, then saves its recovered state without rewriting its schema. It verifies that a new reviewed schema-3 session can follow. An in-memory validator alone is not substituted for this database read path.
 
-Only normal read-only CI remains in the integrated tree. Temporary patch-transport and write-enabled audit workflow files are excluded from delivery. Session integrity validation detects structural inconsistency and prevents rewriting original approved records through the application; it does not claim to defeat arbitrary code already running as the same user. Reports are read from the local recovery database rather than automatically duplicating full inventories into a second JSON file.
+`tests/worker_e2e.rs` is ignored in ordinary local runs. `scripts/ci-normal-user.ps1` is guarded for isolated GitHub Windows CI, creates and removes its own standard account and explicitly opts in to all eight cases. No production privilege bypass, existing-account change or arbitrary user application termination is used.
 
-No real-game FPS/latency improvement, VRAM reclaim amount, native visual-layout inspection, hybrid-GPU/HAGS behavior, anti-cheat acceptance, input/voice reconnect result or optimizer overhead budget is claimed. Keep these as explicit release gates, not hidden assumptions. The existing README and owner specs remain authoritative; do not create duplicate architecture/status documents merely to restate this table.
+### Earlier evidence
 
-## Application-workflow validation
+The [native lifecycle baseline](https://github.com/abrahamahn/process-optimizer/actions/runs/34334379794) and [recovery ownership audit](https://github.com/abrahamahn/process-optimizer/actions/runs/34334785243) remain available in their original runs and Git history. The prior [integrated 0.1.x run](https://github.com/abrahamahn/process-optimizer/actions/runs/34335461323) checked the earlier 86-case source at `85676f2cd9cac8b9cfef75a40d315d0cbf08f3dc`; it does not establish the new 0.2.0 features.
 
-The application-workflow change adds regression coverage for finite group identity, group limits, recipe permissions, changed executables, fresh process resolution, protection, storage bounds, no-launch without verified closure, launch-intent/completion persistence faults, no duplicate reopening and schema-2 recovery without new privileges. Native worker tests exercise GUI executable approval, modified-stamp rejection and restoration-time reopening or explicit desktop deferral. A hosted result that is Deferred does not establish successful GUI launch. Record the committed-source run and the actual native outcome before making completion claims.
+### Capability and delivery boundaries
+
+The native GPU scheduling query returned unavailable (`NTSTATUS 0xc0000022`) on the application-workflow validation runner; its safe fallback passed. **This does not establish GPU priority application or gaming benefit.** PDH provider availability is not physical gaming-GPU validation.
+
+Normal committed-source CI repeats formatting checks, locked tests, warning-free Clippy, all eight standard-user worker tests, release compilation, runtime import inspection, native-window creation and read-only GPU collection before packaging. Each produced ZIP identifies its own source commit and contains an executable checksum; an outer package checksum is also published. A preparation run is not substituted for the final packaged commit's CI result.
+
+Windows x64 uses a statically linked C runtime, configured in `.cargo/config.toml`; `scripts/check-portable.ps1` checks the actual release import table. The [Rust linkage reference](https://doc.rust-lang.org/reference/linkage.html#static-and-dynamic-c-runtimes) documents this mechanism. Runtime-linkage flags alone are not proof of a portable binary.
+
+Only normal read-only CI is retained in the delivered tree. Temporary encoded source transport, correction scripts and write-enabled preparation workflows are removed. Reports read from the local recovery database rather than automatically duplicating machine inventories into JSON exports. Structural checks do not make a same-user local journal tamper-proof. Profile file IDs are not content hashes; every loaded recipe still requires fresh review.
+
+Actual third-party app reopening, visual/accessibility interaction review, sleep/logoff/reboot/power-loss faults, hybrid GPU/HAGS/driver behavior, anti-cheat, input/voice reconnect, sustained optimizer overhead and game frame-time benefits remain unverified. General cooperative pause adapters, whole-app dependency discovery, unattended profile activation, supervised recovery and a signed installer/update path are not implemented. None of these are implied by the passing fixture suite.

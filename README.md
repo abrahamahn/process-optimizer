@@ -6,7 +6,7 @@ Rust + Win32. No web runtime, overclocking, permanent debloat, kernel driver, ga
 
 **Development alpha, not a proven FPS booster.** Native code and deterministic/Windows fixture tests are implemented. Actual gaming GPU compatibility, game/anti-cheat behavior and performance improvements remain unmeasured. See [validation evidence](specs/04-validation-and-delivery.md#recorded-evidence).
 
-## New in the application-workflow alpha
+## New in 0.2.0 — application workflows
 
 **Select same app** expands a finite group with the same executable file, user, logon and Windows session. Review the rows and choose an action; different executables and future processes are not automatically included. This is executable grouping, not a claim that every helper belongs to the same app.
 
@@ -41,8 +41,8 @@ A successful **Windows** GitHub Actions run produces `process-optimizer-windows-
 
 1. Start the game through Steam or its normal launcher. Open Process Optimizer and choose **Refresh GPU / processes**.
 2. Select the actual game process and choose **Use selected as game**. A launcher or a browsed executable path is not a substitute for the running game lifetime.
-3. Select optional background processes with Ctrl/Shift. Assign **Close gracefully**, **Lower priorities**, or the separately confirmed **Force terminate** action. Use **Keep** or the protection control for anything needed by the game, voice, accessibility or device operation.
-4. Before Start, optionally expand a selection with **Select same app**, save/load a game profile, or separately approve **Reopen after close...** for one main GUI process. These controls only edit the unsent preview.
+3. Select optional background processes with Ctrl/Shift. **Select same app** can expand the selection first; inspect its rows, then assign **Close gracefully**, **Lower priorities**, or the separately confirmed **Force terminate** action. Use **Keep** or protection for anything essential.
+4. Before Start, optionally **Save / Load game profile**, or separately approve **Reopen after close...** for one main GUI process already marked **Close gracefully**. Saving and loading prepare a recipe and an unsent preview, never authorization or unattended activation.
 5. Inspect the exact plan and choose **START GAME SESSION**. Lower-priority actions require an explicitly selected policy. GPU scheduling prompts for additional experimental consent; force termination has its own target-specific confirmation.
 6. **Restore now** stops further optimization and restores eligible settings. If the controller died, it starts journal recovery. **Show last report** distinguishes restoration, exited targets, pending close requests and conflicts.
 
@@ -57,6 +57,10 @@ A snapshot records our settings and action intent, **not machine/process/GPU mem
 **GUI reopening is optional and narrowly gated, not general application-state restoration.** General cooperative GPU-pause adapters, service/CPU-Set policies, automatic Steam launcher handoff, unattended per-game activation, a recovery supervisor and an installer remain unavailable. Unavailable launch is visibly disabled; no unsupported shortcut is used in its place.
 
 State stays under `%LOCALAPPDATA%\ProcessOptimizer`. Do not delete it during an active/unresolved session. New session records use schema 3 for separate reopening approval and outcomes. Schema-2 records remain recoverable without acquiring the new launch capability. Other unsupported/corrupt/future records fail closed and are preserved; never remove it merely to suppress a recovery warning. Protection is conservative but cannot infer every third-party dependency: the user must review which optional targets are genuinely nonessential.
+
+## Upgrade from 0.1.x
+
+Finish the old session with **Restore now**, inspect the report, and close the old UI before replacing the executable. Do not delete `%LOCALAPPDATA%\ProcessOptimizer`: it contains recovery evidence. Version 0.2.0 reads and restores schema-2 sessions without granting them any new reopening permission; new sessions use schema 3. Corrupt or unsupported records remain preserved rather than silently reset. App reopening starts a new process and cannot recover unsaved work.
 
 ## Build from source
 
