@@ -1,167 +1,124 @@
-# 03 - Session recovery and architecture
+# 03 - Session, persistence and recovery behavior
 
-Status: initial specification, 2026-09-09. Architecture and data shapes below are proposed contracts; no binaries exist yet.
+Behavioral baseline v1, 2026-09-09. This owns identity, durable state and recovery. [Product](01-product.md) owns consent and [policy](02-gpu-and-process-policy.md) owns Windows mechanisms.
 
-## Snapshot means a scoped change record
+## Architecture
 
-A snapshot captures original settings and relevant application state for our approved actions. It is not System Restore, a filesystem snapshot, a VM checkpoint or a capture of process/GPU memory.
+One Rust Cargo package; native UI and independent session-agent executables. Keep pure model/policy/reconciliation separate from Windows adapters and SQLite persistence. No always-on privileged service or general plugin framework is necessary for the first user-session implementation. Microsoft's Windows bindings support the selected Win32 direction. [R1]
 
-| Recovery category | What recovery means |
+The controller is the sole mutation writer. UI process exit must not own the lifetime of the game-session controller. Normal operation is unelevated and same-user/session. Privileged service control, if later implemented, requires a separate reviewed broker; it must not inherit the UI's unchecked commands.
+
+An initial local request-file transport is permitted only inside the restricted per-user state directory, with bounded typed JSON, exact schema validation, unique request/session identifiers and no arbitrary shell-command fields. Requests are consumed once. A future Named Pipe broker needs restrictive DACL, local-only transport, client SID/session authentication and independent operation authorization. [R2]
+
+## Logical data model
+
+Unknown fields in external requests are rejected; supported schema version is explicit. Implementation type names may differ, but meaning must not.
+
+| Record | Required content |
 | --- | --- |
-| Reversible setting | Restore the exact observed pre-session value when the same target exists and the value has not visibly diverged |
-| Cooperative pause | Resume only a workload we paused, if it is still in the expected paused state |
-| Application closure | Cannot undo termination; optionally launch a new application instance with separate consent |
-| Gone or replaced target | Do not apply an old process's settings to a new PID lifetime |
-| Ambiguous/conflicting state | Preserve evidence and request review; do not guess or overwrite |
+| ProcessIdentity | PID, creation FILETIME, owner SID, interactive Windows session, logon identity where available, canonical image path and file identity/version evidence |
+| Game | Explicitly selected process identity; no implicit foreground or launcher replacement |
+| RequestedAction | Exact target identity, operation, nonessential designation, normal/force/experimental consent as appropriate, optional separately reviewed reopen intent |
+| Plan | Schema, unique ID, game, bounded immutable action set, explicit review acknowledgement |
+| SessionRecord | Schema, ID, game, state, ordered action records, interruption/result details |
+| ActionRecord | Target, operation, original/desired/observed values, recovery category, phase, outcome and error/conflict |
+| Observation | Source, interval, process lifetime, adapter/engine keys, units, optional value and quality |
+| Settings | Schema and user-protected canonical application paths; no persisted force or reopen approval by default |
 
-Restoring a memory-priority setting does not restore previous RAM/VRAM residency. Restarting an app does not restore its unsaved work. The UI must use these exact distinctions rather than a single misleading 'everything restored' label.
+D-01: PID and filename alone never identify a target. Windows exposes process creation times through `GetProcessTimes`. Where practical retain the process handle from revalidation through mutation. File-path normalization is not a substitute for checking the current file identity. [R3]
 
-## Components
+D-02: A restarted process receives no restore settings from an old lifetime. A changed logon/session/lifetime is ineligible. Reboot reconciliation never blindly replays old process changes. If identity/provenance cannot be validated, classify unknown and retain evidence rather than writing.
 
-Use Rust and native Win32 UI. Microsoft's Rust for Windows bindings expose Windows APIs including native window creation. This supports the selected direction; dependency versions and build tooling are chosen and pinned when implementation starts. [A1]
+D-03: Use monotonic time for deadlines; wall clock is display/audit data only. Do not infer a reliable boot identifier from a rounded wall-clock estimate. Process/logon identity and live validation are the initial guard; persistent system-setting mutations are excluded from the first slice.
 
-Keep one repository and initially one Cargo package with modules and two entry points, not a collection of services or reusable frameworks:
+## Durable store and single writer
 
-| Component | Ownership |
+J-01: SQLite is the initial store. Use schema versioning, transactions, explicit FULL synchronous durability and bounded busy timeouts. The first implementation may use rollback-journal mode to simplify read/write behavior. SQLite makes its records atomic, not the external OS call. [R4]
+
+J-02: Acquire an exclusive controller lock before recovery or application. The lock is scoped to the per-user store and lives as an open OS handle, not merely the presence of a PID file. A stale lock filename after a crash is not proof an agent remains alive. No two controllers may mutate from the same store concurrently.
+
+J-03: Enforce at most one unfinished session with a database constraint as well as controller ownership. Repeated Start of an existing plan ID is rejected/idempotent, never another close attempt. Repeated Restore reconciles the existing record. Unresolved records block new mutation sessions until recovery or explicit acknowledgement.
+
+J-04: Restrict the state directory and files to the user/system as needed. Do not use an elevated process to follow user-controlled journal paths. Reject reparse/link/remote-path ambiguity where inspected. Bounded request size is 256 KiB; maximum 32 action entries. Logs are local and contain only necessary identity/settings, not command lines, window titles or document content.
+
+J-05: Disk full, read-only store, unknown schema, corrupt JSON or corrupt database prevents new mutations. Preserve problematic records; never delete them or guess defaults to make the UI look clean. No schema downgrade. Normal retention may prune old completed records, never unresolved records.
+
+## Session state machine
+
+UI-only inspection/review precedes the durable machine below:
+
+```text
+Prepared -> Applying -> Active -> Restoring -> Completed
+                 \---------> Restoring -> RecoveryRequired
+Prepared ------------------> Restoring
+RecoveryRequired ----------> Restoring
+RecoveryRequired ----------> Acknowledged (explicit user review only)
+```
+
+S-01: Attach mode requires a verified running game before accepting the plan and before each new action. If the game is already gone, do not apply anything. The first version does not guess launcher successors. Real game termination or explicit Restore stops new optimization and initiates restoration.
+
+S-02: Cancel during application is checked between bounded actions. A delivered close request cannot be retracted; report that limitation. No additional targets are introduced after review. New processes are not automatically acted on.
+
+S-03: A second Start is rejected while another session is unfinished. A second game is never automatically killed or optimized; the original selected game remains the lifetime authority. Future multi-game support needs explicit shared ownership, not accidental overlapping sessions.
+
+S-04: Focus change, minimize, screen lock and sleep do not equal exit. Before resumed actions or recovery, revalidate live identities and readable state. If observation cannot establish safety, stop new mutations and retain a recoverable/unknown state.
+
+S-05: Closing/crashing the UI does not kill the controller. If the controller dies, immediate recovery is NOT guaranteed in the unsupervised first implementation. Next controller startup reconciles unfinished records before accepting anything new. A supervisor/service claim requires separate crash tests.
+
+## Action phases and write-ahead application
+
+Logical action phases are Planned, Intent, Applied, NoChange, Closed, ClosePending, Failed, Indeterminate, RestoreIntent, Restored, Gone, Conflict and ManualReview. Readable messages explain the exact outcome. Close/force and settings have different recovery categories.
+
+W-01: Preflight the entire finite plan: game identity, target identities/protection, consent, valid operations, duplicate/conflicting actions and size bounds. A malformed or unauthorized plan is rejected before recording external mutation intent.
+
+W-02: Persist the session and planned actions before applying. Immediately before each setting mutation, read original state and compute a non-escalating desired value. An unavailable getter produces unsupported/failed-without-mutation, not a guessed original.
+
+W-03: Durably persist Intent with original and desired values before the external call. If persistence fails here, no external call is allowed. Do not hold a SQLite transaction while waiting for an app or OS operation.
+
+W-04: Revalidate held target/protection and relevant state, perform one bounded operation, then verify observable state. Persist completion separately. A setter error may still leave an uncertain state; use the already durable intent as the recovery anchor.
+
+W-05: If the completion write fails, stop further application and preserve/reconcile from the last durable record. Never erase the prior intent. Failure isolation during recovery must not falsely mark still-pending work completed.
+
+W-06: NoChange requires no restoration write. Lowering policies must not raise an already lower value. A Close request is recorded before sending; only signaled process exit permits Closed. Otherwise ClosePending/Failed/Indeterminate accurately describes the evidence.
+
+## Restoration table
+
+Stop optimization first. Restore actions in reverse dependency/order, continuing independent eligible restorations when one fails. Every restoration write has its own durable intent and readback.
+
+| Observation for a reversible action | Required outcome |
 | --- | --- |
-| Native UI/tray | Preview, consent, protected-app settings, Start/Restore and readable reports |
-| Session controller | Single writer; game lifetime, policy plan, action dispatch, journal, recovery and bounded collection |
-| Policy engine | Pure decisions from observations, capabilities, consent and protections; no hidden OS mutations |
-| Windows adapters | Narrow FFI for process discovery, GPU telemetry, close requests and individually supported policies |
-| Recovery store | Durable local session/action records and app-specific restart intents |
+| Same lifetime; current equals original | Already original/restored; no write |
+| Same lifetime; current equals our verified applied value | Restore exact original; verify and record |
+| Only apply intent survived; current equals recorded desired value | Reconcile conservatively from durable intent, restore original if all identity/value checks hold; record inferred outcome |
+| Current differs from original and our applied/desired value | Conflict; preserve external change |
+| PID disappeared or another lifetime now occupies it | Gone; no write to replacement |
+| Getter/identity inspection fails | Unresolved; retain retry/manual-review path |
+| Setter succeeds but restoration readback differs/fails | Unresolved, not restored |
+| Action is close/force | Never repeat the operation; optional reopening is separate |
 
-Proposed future source layout, not files to create before they are needed:
+R-01: Comparisons are best-effort, not a Windows-wide atomic compare-and-swap. Another actor can race or change a value away and back. Do not advertise perfect ownership detection and do not continuously fight another optimizer.
 
-```text
-src/
-  bin/ui.rs
-  bin/session_agent.rs
-  policy/
-  session/
-  windows/
-  journal/
-  telemetry/
-tests/
-  policy/
-  recovery/
-  windows_integration/
-```
+R-02: Pending irreversible intents must not be blindly replayed. An app absent after an interrupted close is not enough evidence that our action caused it; ambiguous cases only offer manual reopening/review.
 
-The initial controller runs in the user's session and modifies only eligible same-user targets using available rights. Do not require a system service for the first user-mode slice. Later privileged operations may use a narrowly scoped broker with independently authorized actions; do not run the complete UI elevated by default.
+R-03: Restore original representable state, including nondefault priorities and EcoQoS control/state masks. Do not restore an invented Normal/default. Memory-priority restoration does not restore page residency; closing/reopening does not restore process/GPU memory.
 
-## Identity and authorization
+R-04: Automatic reopening is allowed only after verified closure by this session, still-valid separate consent, unchanged executable identity, no existing replacement and an active unlocked interactive desktop. Launch normally, without captured arguments or elevation. Otherwise record deferred/skipped; no background startup on a locked desktop.
 
-`ProcessIdentity` includes PID, process creation time, owning user SID, Windows session, executable path and validated executable/file identity. Hold a process handle across observation and action where practical. `GetProcessTimes` provides creation time; PID alone is never a durable identity. [A2]
+R-05: Reopen intent must be persisted before launching. If the controller dies across a launch, startup does not blindly launch again; detect existing instance where possible or leave manual review. Reopening an app never transfers old per-process settings to it.
 
-An application group contains an explicitly resolved set of such identities and evidence for membership. Re-check protection, owner, lifetime and action permission at mutation time. A signed binary is not automatically disposable. Unknown, critical, protected, system, other-user or ambiguous targets are excluded from automated mutation.
+R-06: Manual acknowledgement requires displaying unresolved actions and an explicit warning that acknowledgement is not restoration. Keep the original record as Acknowledged. It only releases the new-session gate; it must never execute an unreviewed repair or delete evidence.
 
-Automatic policy rules refer to an application identity and permitted operations, not shell patterns. Identity drift, process replacement, policy revision or elevation changes require re-evaluation. Never replay privileged operations from untrusted raw log text.
+## Security, privacy and maintenance
 
-If a broker is introduced, use local-only authenticated IPC with a restrictive Named Pipe DACL, verified client user/session, a small versioned command schema, bounded message size and replay protection. Windows provides access control for Named Pipes; do not accept its defaults without review. [A3]
+No arbitrary privileged shell execution or raw command-line replay. The agent revalidates typed inputs even when the UI generated them. Same-user code is not treated as a security boundary stronger than the user's existing authority; the initial product refuses elevation and remote operation.
 
-The broker re-derives target identity/protection and authorizes each typed operation. It does not accept arbitrary shell commands, registry paths, DLL paths or executable arguments to run as administrator. No remote listener, debug-privilege fallback, protected-process bypass or kernel driver is part of the initial product.
-
-## Minimal data contracts
-
-These are logical records, not a finalized wire format:
-
-```text
-Session:
-  session_id, schema_version, policy_version, user_sid, windows_session_id
-  boot_fingerprint, host_capability_fingerprint, selected_game
-  state, controller_epoch, created_at, finished_at, recovery_summary
-
-Consent:
-  consent_id, session_or_saved_rule_scope, application_identity
-  allowed_actions, target_set_revision, restart_permission, granted_at, revoked_at
-
-Action:
-  action_id, session_id, sequence, capability_id, target_identity
-  action_kind, recovery_category, consent_id, dependencies
-  before_value, requested_value, observed_after_value
-  state, error_or_conflict, timestamps, optional_restart_intent
-
-Observation:
-  source, interval, target_identity, adapter_identity, engine_identity
-  value, units, quality_status, reason_if_unavailable
-```
-
-A boot fingerprint and host capability fingerprint must come from a tested provider; they are not invented Windows API names. Do not use wall-clock timestamps alone to resolve ownership or process identity. Keep monotonic ordering for deadlines and a sequence number for action order.
-
-Use a small local SQLite store as the initial durability proposal, with a single writer, transactions and explicitly tested synchronous durability settings. SQLite protects its own records; it does not make external Windows API operations atomic. A snapshot should contain only necessary settings, not copied user files or a full system registry.
-
-## State machine
-
-```text
-Idle -> Inspecting -> AwaitingConsent -> Prepared -> Applying
-     -> AwaitingGame -> Active -> Restoring -> Completed
-```
-
-An attached-running-game flow may move from Applying directly to Active after verification. Cancellation, launch failure or partial application transitions to Restoring when mutations may have happened. An unresolved or corrupt state is RecoveryRequired, not Completed.
-
-Only one active mutation session is allowed per user in the initial product. Repeated Start/Restore requests are idempotent. A second game is protected and reported; do not kill it or silently reinterpret the existing plan. A later multi-game feature requires explicit ownership/ref-count semantics.
-
-Track the actual game process and verified successor lifetimes. Launcher exit is not proof of game exit. Temporary focus loss, lock screen, Alt-Tab and sleep are not termination. On resume, re-check identities, adapter availability and capability state before any new action. An uncertain game lifetime pauses new mutations and requires review.
-
-## Write-ahead apply protocol
-
-For each action, in dependency order:
-
-1. Verify target identity, protection, current consent, capability and original state. An unreadable original value makes a reversible mutation ineligible.
-2. Persist the action intent and original value durably before attempting the external call. Abort before mutation if the store is unavailable or full.
-3. Re-check target and relevant preconditions, perform one bounded mutation and read back or otherwise verify the observable result.
-4. Persist the outcome as applied, skipped, failed or indeterminate. The API returning success is not sufficient evidence of application exit or performance gain.
-
-Do not hold a database transaction open while waiting for a save dialog or a long OS operation. Persist intent first and record completion in a subsequent transaction.
-
-Action states distinguish `planned`, `intent_persisted`, `applied_verified`, `failed`, `indeterminate`, `restoring`, `restored`, `target_gone`, `conflict`, `reopen_offered`, `reopened` and `manual_review`.
-
-Before any unhandled failure stops the controller, preserve the best available recovery state. If persistence fails after a mutation, the already-durable intent is the recovery anchor. Do not erase it or mark the session clean.
-
-## Restoration and interruption handling
-
-Disable new optimization actions before restoration. Process reversible actions in reverse dependency/order where valid, without blocking unrelated restoration on one failed action.
-
-For a setting action, revalidate identity and read current state:
-
-- Current equals original: no write is needed; record already restored.
-- Current equals our verified applied value and target is still the same: attempt restoration, then verify.
-- Current differs from both: mark conflict; do not overwrite a user's or another tool's observed change.
-- Target exited or identity changed: mark target gone; do not transfer the old setting to a replacement process.
-- Readback is denied or unavailable: retain an unresolved record and expose a retry/manual path.
-
-A pending intent without a completion record requires reconciliation. If an irreversible close may already have happened, never reissue it blindly. Configuration actions can use state comparison; ambiguous ones require review.
-
-These comparisons are best-effort ownership checks, not atomic compare-and-swap across all Windows settings. Another tool can change a value between reads or change it away and back; tests and documentation must acknowledge this limitation. Never continuously force a competing setting back into our preferred value.
-
-### Controller and machine failure
-
-Closing/crashing the UI must leave the independent session controller able to finish the session. Controller startup must inspect unfinished journals before accepting new mutations.
-
-If the controller itself dies and no tested supervisor exists, immediate recovery is not guaranteed. The initial recovery guarantee is reconciliation on the next controller start. A production supervised/broker design must separately prove recovery after controller failure before advertising unattended recovery.
-
-A reboot does not resurrect terminated applications or old processes. Discard process-scoped restore writes for previous-boot lifetimes; revalidate any app-specific persistent pause state before resuming it. The initial slice avoids persistent system configuration changes, reducing the scope of post-reboot recovery.
-
-A corrupt/unsupported journal must be preserved for inspection. Disable new mutation sessions and never guess original values. A reviewed user acknowledgement can resolve an irrecoverable record without falsely claiming restoration.
-
-## Optional application reopening
-
-Only reopen an app that was observed running, was closed by this session, is still absent, and has explicit restart consent. Do not start an application that was already closed before the session.
-
-Use a validated application launch identity or reviewed adapter. Launch with the user's normal privileges, not inherited broker elevation. Do not replay arbitrary captured command lines, environment variables, one-shot commands or shell scripts. Exclude database migrations, build jobs and other non-idempotent workloads unless an app-specific reviewed restart contract exists.
-
-Wait for an interactive unlocked user session before automatic reopening. If the user already reopened the application, skip duplicate launch. Cancellation after app closure can restore settings and offer reopening, but cannot undo the closure itself.
-
-## Local privacy and maintenance
-
-Restrict recovery/config files to their owner and the specifically authorized broker identity. No telemetry upload, browser URLs, document contents, screenshots, window-title collection or command-line collection by default. Redact local paths and user identifiers in exported reports; never commit actual inventories or raw traces to this public repository.
-
-Installer update/uninstall, when implemented, must first detect active sessions, restore eligible changes or expose unresolved recovery, and preserve required recovery data until acknowledged. Do not replace the controller mid-mutation.
+No diagnostic uploads by default. Exports require explicit action and redaction of paths/SIDs. No real machine inventory or trace is committed to this public repository. Installer updates/uninstall, when delivered, must detect active/pending sessions and preserve unresolved recovery data rather than deleting it.
 
 ## Primary evidence
 
-- [A1 - Rust for Windows](https://learn.microsoft.com/en-us/windows/dev-environment/rust/rust-for-windows)
-- [A2 - GetProcessTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes)
-- [A3 - Named Pipe security and access rights](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)
+- [R1 Rust for Windows](https://learn.microsoft.com/en-us/windows/dev-environment/rust/rust-for-windows)
+- [R2 Named Pipe security](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)
+- [R3 GetProcessTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes)
+- [R4 SQLite atomic commit](https://www.sqlite.org/atomiccommit.html) and [synchronous pragma](https://www.sqlite.org/pragma.html#pragma_synchronous)
 
-Other OS/API contracts are owned by [GPU and process policy](02-gpu-and-process-policy.md). Journal/state-machine choices in this document are our design, not guarantees supplied by those APIs.
+State-machine choices are project contracts, not additional guarantees supplied by these APIs.
