@@ -1,0 +1,68 @@
+name: Recovery ownership audit
+on:
+  push:
+    branches: [codex/recovery-audit]
+    paths:
+      - scripts/recovery-audit.patch.gz
+      - scripts/apply_recovery_audit.py
+      - .github/workflows/recovery-audit.yml
+permissions:
+  contents: write
+jobs:
+  audit:
+    if: github.repository == 'abrahamahn/process-optimizer' && github.ref == 'refs/heads/codex/recovery-audit'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Verify and apply the reviewed recovery patch
+        run: python scripts/apply_recovery_audit.py
+      - name: Install pinned toolchain
+        run: rustup toolchain install 1.90.0 --profile minimal --component clippy --component rustfmt
+      - name: Format native source
+        run: cargo fmt --all
+      - name: Behavioral and native fixture tests
+        run: cargo test --locked --all-targets -- --nocapture
+      - name: Separately approved force fixture test
+        run: cargo test --locked --test windows_contract -- --ignored --nocapture
+      - name: Strict native static checks
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Build native application
+        run: cargo build --locked --release --bin process-optimizer
+      - name: Smoke-test our native UI and read-only collector
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $exe = (Resolve-Path target/release/process-optimizer.exe).Path
+          $p = Start-Process $exe -ArgumentList '--ui-smoke' -PassThru
+          if (-not $p.WaitForExit(30000)) { $p.Kill(); throw 'Our native UI probe timed out' }
+          if ($p.ExitCode -ne 0) { throw 'UI smoke failed' }
+          $probe = Join-Path $pwd 'dist/ci.probe.json'
+          $p = Start-Process $exe -ArgumentList @('--probe', $probe) -PassThru
+          if (-not $p.WaitForExit(30000)) { $p.Kill(); throw 'Our read-only probe timed out' }
+          if ($p.ExitCode -ne 0) { throw 'GPU probe failed' }
+          $data = Get-Content $probe -Raw | ConvertFrom-Json
+          Write-Host "GPU provider status: $($data.gpu_status)"
+          Remove-Item $probe
+      - name: Commit tested source to the audit branch only
+        shell: pwsh
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src tests specs
+          git commit -m 'fix: preserve recovery ownership and validate immutable session records'
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot commit verified source' }
+          git push origin HEAD:refs/heads/codex/recovery-audit
+          if ($LASTEXITCODE -ne 0) { throw 'Branch advanced; refusing overwrite' }
+      - name: Archive review state without machine inventory
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force review | Out-Null
+          Compress-Archive -Path src,tests,specs,Cargo.toml,Cargo.lock,rust-toolchain.toml,scripts/apply_recovery_audit.py,scripts/recovery-audit.patch.gz -DestinationPath review/recovery-audit-source.zip
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: recovery-audit-source
+          path: review/recovery-audit-source.zip
+          retention-days: 7
