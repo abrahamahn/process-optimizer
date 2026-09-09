@@ -6,6 +6,7 @@ on:
       - scripts/apply_settings_controls_v041.py
       - scripts/prep_settings_patch_v041.py
       - scripts/fix_apply_settings_script_v041.py
+      - scripts/fix_ownerdraw_bindings_v041.py
       - .github/workflows/apply-settings-v041.yml
 permissions:
   contents: write
@@ -24,6 +25,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Patch driver fix failed' }
           python scripts/apply_settings_controls_v041.py
           if ($LASTEXITCODE -ne 0) { throw 'Settings-control patch failed' }
+          python scripts/fix_ownerdraw_bindings_v041.py
+          if ($LASTEXITCODE -ne 0) { throw 'Owner-draw ABI fix failed' }
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.90.0 --profile minimal --component clippy --component rustfmt
       - name: Format and test
