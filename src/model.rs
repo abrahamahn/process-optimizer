@@ -119,13 +119,8 @@ impl Value {
     pub fn background(&self) -> Self {
         match *self {
             Self::GpuPriority(v) => Self::GpuPriority(v.min(1)),
-            Self::CpuPriority(v) => {
-                Self::CpuPriority(if v == 0x40 || v == 0x4000 { v } else { 0x4000 })
-            }
-            Self::EcoQos { control, state } => Self::EcoQos {
-                control: control | 1,
-                state: state | 1,
-            },
+            Self::CpuPriority(v) => Self::CpuPriority(if v == 0x40 || v == 0x4000 { v } else { 0x4000 }),
+            Self::EcoQos { control, state } => Self::EcoQos { control: control | 1, state: state | 1 },
             Self::MemoryPriority(v) => Self::MemoryPriority(v.min(2)),
         }
     }
@@ -227,12 +222,7 @@ impl Session {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FaultKind {
-    Gone,
-    Denied,
-    Unsupported,
-    Other,
-}
+pub enum FaultKind { Gone, Denied, Unsupported, Other }
 
 #[derive(Clone, Debug)]
 pub struct Fault {
@@ -242,10 +232,7 @@ pub struct Fault {
 
 impl Fault {
     pub fn new(kind: FaultKind, message: impl Into<String>) -> Self {
-        Self {
-            kind,
-            message: message.into(),
-        }
+        Self { kind, message: message.into() }
     }
 }
 
