@@ -1,0 +1,113 @@
+name: Validate simple On-Off game mode
+on:
+  push:
+    branches: [codex/simple-game-mode]
+    paths: [scripts/simple-part-*.txt, scripts/prepare_simple.py, scripts/simple_followup.py, .github/workflows/prepare-simple.yml]
+permissions:
+  contents: write
+concurrency:
+  group: simple-validation-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    if: github.repository == 'abrahamahn/process-optimizer' && github.ref == 'refs/heads/codex/simple-game-mode'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Apply reviewed source changes
+        run: python scripts/prepare_simple.py
+      - name: Install pinned native toolchain
+        run: rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy
+      - name: Format
+        run: cargo fmt --all
+      - name: Native and deterministic contract tests
+        run: cargo test --locked --all-targets -- --nocapture
+      - name: Explicit test-owned force fixture
+        run: cargo test --locked --test windows_contract -- --ignored --nocapture
+      - name: Manual and attached lifecycle under disposable standard user
+        shell: pwsh
+        run: ./scripts/ci-normal-user.ps1
+      - name: Warning-free native checks
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Build portable application
+        run: cargo build --locked --release --bin process-optimizer
+      - name: Verify portable runtime dependencies
+        shell: pwsh
+        run: ./scripts/check-portable.ps1
+      - name: Default and advanced native window smoke
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path target/release/process-optimizer.exe).Path
+          foreach ($mode in @('--ui-smoke', '--advanced-smoke')) {
+            $p = Start-Process -FilePath $exe -ArgumentList $mode -PassThru
+            if (-not $p.WaitForExit(30000)) { $p.Kill(); throw "Our $mode timed out" }
+            if ($p.ExitCode -ne 0) { throw "Native $mode failed" }
+          }
+      - name: Read-only GPU collector
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force review | Out-Null
+          $exe = (Resolve-Path target/release/process-optimizer.exe).Path
+          $probe = Join-Path $pwd 'review/ci.probe.json'
+          $p = Start-Process -FilePath $exe -ArgumentList @('--probe', $probe) -PassThru
+          if (-not $p.WaitForExit(30000)) { $p.Kill(); throw 'Our read-only probe timed out' }
+          if ($p.ExitCode -ne 0) { throw 'GPU probe failed' }
+          $data = Get-Content $probe -Raw | ConvertFrom-Json
+          Write-Host "Provider status: $($data.gpu_status)"
+          Remove-Item $probe
+      - name: Capture our synthetic preview window only
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public class PreviewCapture {
+            [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+            [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+            [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, uint flags);
+          }
+          '@
+          Add-Type -AssemblyName System.Drawing
+          $exe = (Resolve-Path target/release/process-optimizer.exe).Path
+          $p = Start-Process -FilePath $exe -ArgumentList '--simple-preview' -PassThru
+          try {
+            $deadline = [DateTime]::UtcNow.AddSeconds(5)
+            do { Start-Sleep -Milliseconds 100; $p.Refresh() } while ($p.MainWindowHandle -eq 0 -and [DateTime]::UtcNow -lt $deadline)
+            if ($p.MainWindowHandle -eq 0) { throw 'Our preview window unavailable' }
+            $r = New-Object PreviewCapture+RECT
+            if (-not [PreviewCapture]::GetWindowRect($p.MainWindowHandle, [ref]$r)) { throw 'Preview bounds unavailable' }
+            $bitmap = [System.Drawing.Bitmap]::new($r.Right-$r.Left, $r.Bottom-$r.Top)
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            $dc = $graphics.GetHdc()
+            try { $ok = [PreviewCapture]::PrintWindow($p.MainWindowHandle, $dc, 2) } finally { $graphics.ReleaseHdc($dc) }
+            if (-not $ok) { throw 'Preview capture unavailable' }
+            $bitmap.Save((Join-Path $pwd 'review/simple-ui.png'), [System.Drawing.Imaging.ImageFormat]::Png)
+            $graphics.Dispose(); $bitmap.Dispose()
+          } finally { if (-not $p.HasExited) { $p.WaitForExit(10000) | Out-Null }; if (-not $p.HasExited) { $p.Kill() } }
+      - name: Commit verified source only to validation branch
+        shell: pwsh
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src tests specs README.md Cargo.toml Cargo.lock .github/workflows/ci.yml
+          git commit -m 'feat: simplify default UI to manual Game Mode On-Off with approved background apps'
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot commit verified source' }
+          git push origin HEAD:refs/heads/codex/simple-game-mode
+          if ($LASTEXITCODE -ne 0) { throw 'Branch advanced; refusing to overwrite' }
+          git rev-parse HEAD
+      - name: Archive inspected source
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force review | Out-Null
+          Compress-Archive -Path src,tests,specs,Cargo.toml,Cargo.lock,README.md,AGENTS.md,rust-toolchain.toml -DestinationPath review/simple-source.zip
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: simple-mode-review
+          path: |
+            review/simple-source.zip
+            review/simple-ui.png
+          retention-days: 7
