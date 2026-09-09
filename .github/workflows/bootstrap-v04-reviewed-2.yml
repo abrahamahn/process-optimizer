@@ -1,3 +1,4 @@
+# retry reviewed source bootstrap 2026-09-10
 name: Bootstrap reviewed v0.4 source (verified)
 on:
   push:
