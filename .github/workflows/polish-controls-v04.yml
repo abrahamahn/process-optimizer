@@ -11,8 +11,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - name: Apply final UX polish
-        run: python scripts/polish_controls_v04.py
+      - name: Apply final selector clarity
+        run: python scripts/finalize_controls_v04.py
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy
       - name: Prepare disposable current-user startup fixture parent
@@ -50,7 +50,7 @@ jobs:
           if (-not $p.WaitForExit(30000)) { $p.Kill(); throw 'Probe timed out' }
           if ($p.ExitCode -ne 0) { throw 'Probe failed' }
           Remove-Item $probe
-      - name: Commit only polished product source
+      - name: Commit only final product source
         shell: pwsh
         run: |
           git config user.name 'github-actions[bot]'
@@ -58,7 +58,7 @@ jobs:
           git add src/windows/simple_ui.rs
           git diff --cached --quiet
           if ($LASTEXITCODE -eq 1) {
-            git commit -m 'fix: preserve app selection and selector state'
+            git commit -m 'fix: make keep and startup states explicit'
             if ($LASTEXITCODE -ne 0) { throw 'Commit failed' }
             git push origin HEAD:refs/heads/codex/cleanup-ui-v04
             if ($LASTEXITCODE -ne 0) { throw 'Push failed' }
