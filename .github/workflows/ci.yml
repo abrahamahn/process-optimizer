@@ -37,6 +37,9 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.90.0 --profile minimal --component clippy --component rustfmt
       - run: cargo fmt --all -- --check
+      - name: Prepare disposable current-user startup fixture parent
+        shell: pwsh
+        run: New-Item -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Force | Out-Null
       - name: Native and behavioral tests (only test-owned fixtures may be changed)
         run: cargo test --locked --all-targets -- --nocapture
       - name: Separately opt in to force termination of our disposable fixture only
