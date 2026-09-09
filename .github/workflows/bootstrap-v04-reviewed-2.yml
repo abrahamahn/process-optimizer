@@ -1,4 +1,4 @@
-# retry reviewed source bootstrap 2026-09-10
+# retry reviewed source bootstrap 2026-09-10 (SetFocus fix)
 name: Bootstrap reviewed v0.4 source (verified)
 on:
   push:
@@ -38,6 +38,15 @@ jobs:
           }
           if (-not (Select-String -Path src/windows/simple_ui.rs -Pattern 'const PERMANENT:' -Quiet)) { throw 'Permanent cleanup UI source not present' }
           if (-not (Test-Path src/windows/startup.rs)) { throw 'Startup adapter missing' }
+          $ui = Get-Content src/windows/simple_ui.rs -Raw
+          $old = '            SetFocus(self.h(COPY_TEXT));'
+          $new = '            windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus(self.h(COPY_TEXT));'
+          if ($ui.Contains($old)) {
+            $ui = $ui.Replace($old, $new)
+            Set-Content src/windows/simple_ui.rs -Value $ui -Encoding utf8 -NoNewline
+          } elseif (-not $ui.Contains($new)) {
+            throw 'Reviewed SetFocus call shape changed unexpectedly'
+          }
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy
       - name: Resolve, format, and test
