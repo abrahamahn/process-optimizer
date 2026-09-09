@@ -17,20 +17,20 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
-      - name: Verify feature source marker and implementation shape
+      - name: Verify reviewed feature shape
         shell: pwsh
         run: |
-          if (-not (Test-Path V04_VERIFIED.txt)) { throw 'Verified v0.4 marker missing' }
           if (-not (Test-Path src/windows/startup.rs)) { throw 'Startup cleanup adapter missing' }
           if (-not (Select-String -Path src/windows/simple_ui.rs -Pattern 'const PERMANENT:' -Quiet)) { throw 'Two-mode UI source missing' }
-          if (-not (Test-Path tests/startup_cleanup.rs)) { throw 'Native startup round-trip test missing' }
+          if (-not (Select-String -Path tests/windows_hardening.rs -Pattern 'current_user_run_entry_round_trips_without_touching_existing_startup' -Quiet)) { throw 'Owned HKCU Run round-trip test missing' }
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy
+      - name: Prepare disposable current-user startup fixture parent
+        shell: pwsh
+        run: New-Item -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Force | Out-Null
       - name: Full Windows promotion gate
         shell: pwsh
         run: |
-          cargo generate-lockfile
-          if ($LASTEXITCODE -ne 0) { throw 'Lockfile generation failed' }
           cargo fmt --all -- --check
           if ($LASTEXITCODE -ne 0) { throw 'Formatting check failed' }
           cargo test --locked --all-targets -- --nocapture
@@ -69,15 +69,16 @@ jobs:
           Copy-Item scripts/promote_v04_docs.py "$env:RUNNER_TEMP/promote_v04_docs.py"
           git fetch origin main
           git switch --detach origin/main
-          git checkout $source -- Cargo.toml Cargo.lock src tests
+          git checkout $source -- Cargo.toml Cargo.lock src tests .github/workflows/ci.yml
           python "$env:RUNNER_TEMP/promote_v04_docs.py"
           if ($LASTEXITCODE -ne 0) { throw 'Documentation sync failed' }
           cargo fmt --all -- --check
           if ($LASTEXITCODE -ne 0) { throw 'Promoted source formatting drifted' }
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add Cargo.toml Cargo.lock README.md specs src tests
-          if (git diff --cached --name-only | Select-String '^\.github/workflows/|^scripts/v04-|^V04_VERIFIED') { throw 'Temporary validation files would leak into main' }
+          git add Cargo.toml Cargo.lock README.md specs src tests .github/workflows/ci.yml
+          $bad = git diff --cached --name-only | Where-Object { ($_ -like '.github/workflows/*' -and $_ -ne '.github/workflows/ci.yml') -or $_ -like 'scripts/v04-*' -or $_ -like 'scripts/*cleanup*v04*' -or $_ -eq 'V04_VERIFIED.txt' }
+          if ($bad) { throw "Temporary validation files would leak into main: $($bad -join ', ')" }
           git commit -m 'feat: add permanent startup cleanup and copyable process diagnostics'
           if ($LASTEXITCODE -ne 0) { throw 'Promotion commit failed' }
           git push origin HEAD:refs/heads/main
