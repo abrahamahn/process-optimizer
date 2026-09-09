@@ -1,96 +1,96 @@
-# 01 - Product
+# 01 - Product and user-visible behavior
 
-Status: initial specification, 2026-09-09. No implementation or measured performance improvement is claimed.
+Behavioral baseline v1, 2026-09-09. MUST/MUST NOT are requirements, not statements that an implementation or performance result exists. Implementation evidence is maintained in [validation](04-validation-and-delivery.md). This document owns user-visible behavior; [policy](02-gpu-and-process-policy.md) owns resource actions and [recovery](03-session-recovery-and-architecture.md) owns durable state.
 
-This document owns product scope. [Policy](02-gpu-and-process-policy.md), [recovery](03-session-recovery-and-architecture.md) and [validation](04-validation-and-delivery.md) own their respective details.
+## Purpose and priorities
 
-## Purpose
+Temporarily reduce unnecessary non-game work on the GPU used by a game, preserve required functionality, and restore settings changed by this application. GPU processing contention and video-memory pressure are separate concerns. A smaller process count or a lower counter does not prove better frame times.
 
-Temporarily turn a normal Windows workstation into a less-contended gaming environment, then recover the settings changed by the optimizer. The user should not have to permanently debloat Windows or manually close and reopen the same approved applications every time.
+P-01: GPU visibility and user-approved application closure are required in the first usable version. A CPU-priority-only utility is not this product.
 
-**Primary objective: minimize unnecessary non-game work on the GPU used by the game, while preserving the operating system and the user's required functions.**
+P-02: Native Windows application, Rust core and Win32 UI. No Electron, WebView, account, cloud backend, embedded LLM or compulsory overlay. First build/validation target is Windows x64; Windows 11 gaming compatibility must be established separately from hosted Windows CI.
 
-This is not a process-count contest, a RAM-cleaning utility, or an overclocking tool. A reduction in resource counters is useful evidence, but not proof of higher FPS or smoother frames.
+P-03: Overclocking, undervolting, fan/firmware control, permanent debloating, security disabling, kernel patching, driver reset, game injection, anti-cheat bypass and a stripped boot shell are excluded. Do not change game quality, resolution, frame cap, HDR, VRR or frame-generation settings.
 
-## Confirmed requirements
+P-04: Protect networking, Bluetooth, input, audio, display, security, accessibility, game authentication/anti-cheat and required thermal/device software. No process-name kill list, service-host termination, suspension of arbitrary threads, shader-cache deletion, pagefile disabling or RAM/VRAM purge.
 
-| ID | Requirement |
-| --- | --- |
-| P-01 | GPU processing contention is the first optimization priority; distinguish it from GPU memory pressure. |
-| P-02 | Closing unnecessary background applications with user consent is a core feature, not an excluded action. |
-| P-03 | Graceful close and optional force termination are distinct operations with distinct consent. |
-| P-04 | Low-level temporary policies are in scope when their effect, compatibility and recovery can be demonstrated. |
-| P-05 | A session snapshot plus a durable change journal must support restoration of settings we changed. |
-| P-06 | The application must be native Windows software with a small, understandable settings surface. |
-| P-07 | Online play, Bluetooth, input, audio, display, security and required game infrastructure must remain functional. |
-| P-08 | CPU/GPU overclocking and voltage tuning are excluded. |
+## UI state and first-run defaults
 
-Rust with Win32 is the initial implementation direction. Exact compatibility ranges, API permissions and performance budgets below are engineering proposals requiring validation, not facts about a released product.
+| State | Visible behavior | Allowed operations |
+| --- | --- | --- |
+| Idle | No active session; recovery status and selected game | Refresh, select game, configure protection, build plan |
+| Inspecting | Read-only resource collection; unknown values are labeled | Cancel observation; no mutations |
+| Reviewing | Exact target lifetimes, actions, risks and recovery categories | Edit/remove actions, approve or cancel |
+| Starting | Independent controller validates and records the request | Restore/cancel; no second Start |
+| Active | Session identifier, game lifetime, applied/skipped actions | Restore; close UI without abandoning recovery |
+| Restoring | New optimization stops; per-action outcomes displayed | Idempotent Restore retry |
+| RecoveryRequired | Unfinished/conflicting changes and their reasons | Retry recovery or explicitly acknowledge unresolved records |
+| Completed | Restored settings, exited processes, reopen outcomes and unresolved limits are distinguished | New inspection/session |
 
-## Priority and first release
+U-01: First launch is read-only. No selected termination targets, no persisted destructive approval, no automatic activation, no force-close fallback, no reopen permission and no experimental policy enabled.
 
-First: identify background GPU consumers and provide an approved application-close or supported workload-pause path.
+U-02: The initial safe interaction attaches to an explicitly selected already-running game. The selection identifies its actual process lifetime, not merely a launcher or foreground window. The UI MUST reject known launchers as the game target. Automatic launcher tracking and saved auto-activation are unavailable until their adapters and lifetime handoff tests exist; unavailable functionality is shown honestly, not simulated.
 
-Second: investigate reversible GPU scheduling policies for eligible applications that remain open. These are best-effort contention controls, not GPU percentage caps.
+U-03: Select the game's observed adapter when unambiguous. If no adapter or multiple adapters can be identified, show unknown/ambiguous and allow explicit inspection; never assume GPU 0. A manually approved close can still run without GPU evidence, but MUST NOT be presented as a measured GPU recommendation.
 
-Third: reduce supporting CPU, memory and I/O contention without breaking retained functionality.
+U-04: Inventory presents application/executable, PID, protection/eligibility, engine/adapter evidence and dedicated/shared memory estimates separately. No browser URLs, document contents, window titles or command lines are collected for display. Sort by a named per-engine observation, not a fictitious sum across engines.
 
-The first usable release must contain GPU visibility, consented closure, a native Start/Restore interface and recovery records. A release containing only CPU priority and EcoQoS changes does not satisfy this scope.
+U-05: The user marks individual verified process lifetimes or an explicitly enumerated group as nonessential. A group is a finite set, not recursive authorization over future children. Generic closure reports selected-process outcomes and possible remaining helpers; only a tested app adapter may claim whole-app closure.
 
-Proposed first validation target: Windows 11 x64 on an explicitly recorded OS build and driver configuration. Other Windows versions, ARM64 and vendor/driver combinations are unverified until tested; do not infer support from compilation alone.
+U-06: A plan has at most 32 action entries and one action of each kind per target. Closure/force closure conflicts with other actions for that target. The preview is invalidated if a selected identity, game, protection rule or action changes. Refreshing counters does not silently replace an approved target with a new PID lifetime.
 
-## Session experience
+U-07: Closing/minimizing the native window stops its rendering/refresh work; the independent controller retains the session. Reopening the UI reads controller/journal state. The UI MUST NOT interpret its own exit, Alt-Tab, game minimization or screen lock as game exit. No always-on dashboard animation is required.
 
-1. Select a game or attach to a verified running game. Show the selected rendering adapter when it can be determined.
-2. Inspect the application's resource use and present a concrete action preview. Nothing destructive is pre-approved merely because an application is in the background.
-3. Obtain approval, save mutation intent, apply only the approved plan and observe the actual game process rather than the launcher alone.
-4. Monitor with bounded overhead. New or changed applications require policy re-evaluation, not a kill-everything loop.
-5. When the game exits, or when the user chooses Restore, stop applying policies, restore eligible settings and optionally reopen applications under a separate restart permission.
-6. Show settings restored, applications reopened, actions skipped, unresolved conflicts and unsupported capabilities separately.
+U-08: Settings consist of protected apps and visible capability/experimental-policy controls. Protection is conservative across app updates at the same canonical path. A protection removal does not itself authorize an action. Invalid settings fail closed; do not silently reset them to a less protective empty list.
 
-Game launch from Steam or another launcher may trigger a saved profile only after the user opts into automatic activation. First-run review is mandatory. Alt-Tab, minimized windows and temporary loss of foreground focus are not game exit.
+U-09: Native controls must be keyboard reachable, have textual labels, follow system font/contrast conventions, resize without hiding Restore and support high-DPI text. Accessibility and visual review are a release gate, not implied by successful compilation.
 
-## Consent contract
+## Consent
 
-Every preview entry identifies the application, verified process group, proposed action, reason, observed GPU/other resource evidence, possible interruption and recovery category.
+C-01: Every action requires session-scoped review of exact target identity, operation, reason, save-state uncertainty and recovery category. Explicit confirmation that optional targets are nonessential is necessary; high resource usage is never permission. Hard protection still overrides consent.
 
-Consent is scoped to one session by default. A saved per-game/per-application rule is separately opt-in, revocable, versioned and invalidated by relevant identity or action changes. It is not blanket permission to terminate new processes with the same filename.
+| Operation | Approval | Recovery disclosure |
+| --- | --- | --- |
+| Graceful close | Approve the listed lifetimes | May display a save prompt or refuse; shutdown cannot be undone |
+| Force terminate | A separate explicit confirmation listing the current exact force targets; never remembered as a default | Unsaved work can be lost; normal shutdown handlers may not run |
+| GPU/CPU/memory policy | Approve each policy; experimental policy requires an additional opt-in | Restore the original readable value if the same target and ownership checks remain valid |
+| Cooperative pause | Approve a tested adapter's specific workload | Resume only work paused by this session |
+| Reopen app | Separate opt-in for each eligible application launch identity | New process, not restored RAM/VRAM/documents or old execution state |
 
-| Action | Consent and outcome |
-| --- | --- |
-| Keep/protect | No mutation. Protection takes precedence over other rules. |
-| Lower approved scheduling policy | Capture the original readable value first; restore that value if ownership checks still hold. |
-| Pause supported workload | Requires a tested application adapter and readable prior state; resume only work we paused. |
-| Gracefully close application | Explicit approval. A refusal, save dialog or timeout does not authorize force termination. |
-| Force terminate application | Separate explicit confirmation for the currently verified target set; warn that unsaved work may be lost. Disabled by default and not silently persisted. |
-| Reopen after the game | Separate opt-in. A new process is launched; unsaved documents, runtime state and GPU allocations are not restored by this product. |
+C-02: Start cannot imply consent to unlisted force termination. Normal-close timeout, missing windows, refusal, access denial or save prompts MUST NOT escalate to force. A separately chosen Force action is a new reviewed action, not a hidden fallback.
 
-The product cannot generally determine whether arbitrary applications have unsaved work. Unknown save state must be shown as unknown. A Start button never constitutes consent to an unlisted force termination.
+C-03: Unknown save state stays unknown. Never dismiss a save dialog, confirm a destructive application prompt or synthesize an answer on the user's behalf.
 
-## Protected functionality
+C-04: Cancellation before the durable session record causes no mutations. Cancellation after partial application stops further actions and restores eligible settings; apps already closed stay closed unless separate reopen permission applies.
 
-Protect the game and required launcher/authentication/anti-cheat processes, Windows session and graphics infrastructure, networking, Bluetooth, audio, input, security, accessibility and essential thermal/device control. User-marked protected apps, voice chat, streaming and assistive tools remain available unless the user deliberately changes their non-system application policy.
+C-05: Reopening is never enabled by default. Generic reopening is limited to a verified original executable with no replayed command line, normal user privileges, unchanged file identity and no existing replacement instance. Headless jobs, migrations and shell commands are not generic reopen candidates.
 
-Examples of optional candidates, not a kill list: animated wallpapers, inactive browsers, optional capture/overlay utilities, paused development tools and local GPU compute workloads. Their names or vendor signatures do not prove they are safe to close. Active capture, voice or remote-play roles change the decision.
+C-06: Saved automatic closure rules, if later delivered, require their own opt-in, expiry/revocation and identity-version rules. A filename alone is not persistent authorization. In v1 no unattended future-process termination rule is created.
 
-Do not terminate a launcher helper just because it uses GPU memory. Preserve game launch, authentication, controller routing, cloud saves and required UI dependencies. Unknown dependency means skip and explain.
+## Protected and optional applications
 
-## Native settings and UI
+Hard protection includes the game, verified game infrastructure, the optimizer/controller, critical/protected/system or other-user processes, session-0 services, Windows graphics/session components and paths, known security/launcher/anti-cheat/voice/input/thermal infrastructure, and user-protected paths. Failed identity or protection inspection is not eligibility.
 
-Keep the primary screen to: selected game, GPU/resource overview, action preview, Start and Restore. Advanced settings expose protected applications, per-app actions, restart consent, tested policy switches and diagnostic capture.
+Generic role discovery cannot prove every arbitrary third-party dependency. Require a reviewed nonessential designation, retain conservative hard protections, do not infer disposable status from a digital signature, and state this limitation. Existing accessibility/voice/capture/device dependencies must be reviewed on the actual gaming host before use.
 
-The resource view labels adapter and engine; it separates GPU processing, dedicated memory and shared memory. Measured changes must not be presented as guaranteed recoverable VRAM or predicted FPS.
+Optional examples, not defaults: animated wallpapers, inactive browsers, unused GUI development tools, optional capture/overlay applications and explicit local GPU workloads. Active voice, capture, remote play or accessibility changes the role. Steam helpers are protected by default, even when they consume GPU resources.
 
-While gaming, the UI sleeps or closes to the tray. No always-on animations, web runtime, compulsory overlay or persistent optimizer-created rendering workload. Accessibility, high-DPI support, keyboard navigation and visible recovery status are release requirements.
+A protection added during a session prevents future optimization actions. It does not prevent attempting to undo that session's own prior reversible changes. No repeated fight with user changes or respawn loops.
 
-The session controller is independent of the window. Closing the window must not lose recovery records. Behavior if both controller and UI die is specified in the recovery document, not hidden behind an unconditional restoration promise.
+## Honest results
 
-## Non-goals and boundaries
+R-01: Distinguish settings restored/already original, target exited/replaced, close refused/timed out, unsupported capability, recovery conflict, application reopened, reopen deferred and manual acknowledgement. Never collapse them into 'everything restored'.
 
-No CPU/GPU overclocking, undervolting, fan tuning, firmware control, permanent service disabling, registry debloat, security-feature disabling, kernel patching, game DLL injection or anti-cheat bypass.
+R-02: Snapshot means our original values plus a durable change journal, not a Windows restore point or machine checkpoint. Reopening cannot restore unsaved work.
 
-No whole-machine snapshot, disk rollback or reboot into a stripped Windows shell in the first product. No clearing shader caches, disabling the pagefile, indiscriminate working-set trimming, forced DWM termination or display-driver reset as a performance feature.
+R-03: GPU scheduling preference is not a GPU percentage cap or exclusive reservation. No promise of zero non-game GPU usage, a fixed amount of reclaimed VRAM or a fixed FPS gain.
 
-No universal zero-GPU policy for every non-game process, no GPU hard-quota claim, no guaranteed fixed amount of recovered memory and no fixed FPS uplift claim. Required graphics work remains exempt.
+R-04: Required rendering and OS work may remain. Dedicated allocations, shared system memory, GPU engine activity and frame-time improvement must not be conflated.
 
-No account, cloud backend or LLM is required for the local optimizer. Runtime inventories, consent and recovery logs stay local by default; exported diagnostics require deliberate user action and redaction.
+R-05: Without a comparable benchmark, report 'gaming benefit not measured'. No fabricated saved-VRAM estimate from summing process counters.
+
+## Feature availability and scope boundaries
+
+A feature has one explicit availability state: implemented-and-tested for the recorded environment, experimental/opt-in, unsupported on this host, or not implemented. Missing adapters do not fall back to undocumented operations.
+
+The complete behavioral baseline specifies failure as well as success. It does not promise that every Windows driver or third-party application supplies a pause API. CPU Sets, service/app-specific pause, launch-time GPU preference, automatic launcher handoff and supervised recovery require their own implementation evidence before becoming available. The first native session path must remain useful without those optional capabilities.

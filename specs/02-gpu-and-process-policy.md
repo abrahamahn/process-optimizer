@@ -1,124 +1,104 @@
-# 02 - GPU and process policy
+# 02 - GPU and process behavior
 
-Status: initial specification, 2026-09-09. This is an implementation contract and feasibility plan, not a tested Windows implementation.
+Behavioral baseline v1, 2026-09-09. This owns observation semantics, protection and action mechanisms. [Product](01-product.md) owns consent; [recovery](03-session-recovery-and-architecture.md) owns writes and restoration.
 
-## GPU-first objective
+## GPU observation
 
-Reduce unnecessary competing work on the game's active GPU and investigate memory pressure separately. Do not redefine success as a low total GPU utilization number: a game can legitimately use the GPU heavily after interference is reduced.
+G-01: A sample identifies source, quality, monotonic interval, process lifetime, adapter LUID, physical adapter index where exposed, engine ID/type and units. Dedicated memory and shared memory are independent optional values. Adapter LUID is session-valid, not a persistent hardware key. Never assume GPU 0.
 
-WDDM schedules GPU engines and manages video memory. Engines can operate concurrently; process memory accounting may include shared allocations. These are reasons to preserve adapter/engine identity and avoid naive summation. [S1]
+G-02: The initial collector uses Windows PDH with language-neutral English counter registration for GPU Engine / Utilization Percentage and GPU Process Memory / Dedicated Usage / Shared Usage when present. Two collection points are required for rate counters. English wildcard registration and formatted-array retrieval must be exercised on non-English Windows too. [S1][S2]
 
-All actions remain subject to the [product consent contract](01-product.md) and [recovery protocol](03-session-recovery-and-architecture.md).
+G-03: Collect an identity inventory before and after the measured interval. Only attribute a PID counter to a process when both inventories identify the same lifetime. New processes, exited/reused PIDs, invalid item status and missing sources become unknown/unattributed, not zero.
 
-## Observation model
+G-04: Validate returned buffer sizes, item counts, string boundaries, numeric finiteness and ranges. Bound allocation/retry attempts. Counter growth must cause a bounded re-query, never an unbounded allocation or pointer walk. Preserve unknown engine names rather than guessing their meaning.
 
-Collect `ProcessIdentity`, application/group identity, owner/session, adapter identity, engine identifier/type, observation interval, GPU activity, dedicated/shared memory where available, CPU/I/O evidence, protection reason and telemetry quality.
+G-05: Keep 3D, compute, copy, encode and decode engines separate. A 'busiest observed engine' summary is the maximum of known comparable engine observations and is labeled as such; it is not total GPU use and incomplete samples remain labeled partial. Never sum unrelated percentages.
 
-A process identity is tied to its observed lifetime, not just its PID. An adapter uses a session-valid LUID plus descriptive hardware identity; never assume GPU 0 is the game's GPU. Multi-adapter activity remains separated. Device removal, driver restart or adapter changes invalidate observations and require re-probing.
+G-06: Do not sum per-process memory to infer physical adapter usage or recoverable VRAM. Cross-process surfaces can be counted multiple times; shared GPU memory is not dedicated VRAM. `QueryVideoMemoryInfo` concerns the calling process, not an arbitrary game's PID. Historical GPU Process Memory counter issues require configuration-specific validation, not a claim all modern hosts are broken. [S3][S4][S5]
 
-The proposed collector uses runtime-discovered Windows GPU performance counters through PDH, including GPU Engine and GPU Process Memory where available. Locale-aware enumeration or the documented English-counter API must avoid hard-coded localized names. Missing counters, access failures and invalid sample status produce `unknown`, not zero. PDH's English-counter API is documented; presence and correctness of a GPU counter set still require host tests. [S2]
+G-07: Runtime missing counters, unsupported driver paths, access denial, adapter change and stale data are explicit unknown/degraded statuses. Observation failure does not permit privileged fallback or make an app automatically disposable. Driver/device changes invalidate old attribution and capability evidence.
 
-Detailed ETW/WPR/WPA or PresentMon capture is an explicit diagnostic path, not an unrestricted always-on trace. Identify PID reuse and stale samples before joining resource observations to an action target.
+G-08: In normal mode use approximately two-second observation intervals when the inventory is explicitly visible/refreshed. The hidden controller must not continuously render or run detailed tracing. New consumers are never automatically terminated. Detailed ETW/WPR/WPA/PresentMon capture is separate, time-bounded and opt-in.
 
-### Accounting requirements
+G-09: A candidate's resource evidence is advisory. For any automatic recommendation added later, require sustained same-adapter evidence from at least three valid intervals, and retain protection/consent as hard constraints. A one-off spike or a large memory allocation alone never authorizes an action.
 
-- Keep 3D, compute, copy, video encode and decode work distinct when the provider exposes them. Do not add unrelated engine percentages into a fictitious total; missing engine types remain unknown.
-- Rank optional candidates using sustained activity on the game's adapter and separately observed memory pressure. One instantaneous spike or a large allocation alone is not authorization to close an app.
-- Do not add per-process memory values and claim the result is adapter-wide usage. Cross-process shared allocations can be double-counted. Shared GPU memory is also not equivalent to dedicated VRAM. [S1]
-- `IDXGIAdapter3::QueryVideoMemoryInfo` describes the calling process's budget and usage; it is not an arbitrary game-PID memory-budget query. Do not show the optimizer's budget as the game's. [S3]
-- Microsoft documents incorrect GPU Process Memory values on affected Windows 10 systems. Treat per-process values as estimates until cross-checked on the tested configuration; do not assume that historical issue exists on every Windows 11 system. [S4]
-- Attribute DWM/shared-surface memory cautiously. Do not call it a leak or reclaimable waste solely from a process counter.
+## Target inspection and protection
 
-## Action selection
+T-01: Open a process with only the required rights. Validate PID, creation FILETIME, owning SID, interactive session, logon identity when available, executable path and file identity. Hold the handle across revalidation and action; never reopen a PID and assume it is the same lifetime.
 
-Protection and consent are hard constraints, not score penalties. A policy produces a finite, reviewable plan using these alternatives:
+T-02: Initial actions are same-user, same interactive-session, unelevated operations. Reject elevated optimizer operation rather than turning all actions into administrator operations. No SeDebugPrivilege, protected-process access bypass, game injection or own kernel driver.
 
-| Action | Intended mechanism | Product treatment |
+T-03: Inspect critical/protected state and executable provenance. An inspection error means skip. Hard-protect Windows paths, system/session services, the game, optimizer executables, known required game/security/audio/input/network/thermal components and user-protected paths. Role-name heuristics are additional conservative protection, not sufficient proof of eligibility.
+
+T-04: A game selection is protected before validating other plan targets. Known launchers cannot substitute for a real game lifetime. A plan involving the game or a hard-protected process is rejected before any mutation, even when force confirmation is present.
+
+T-05: Generic application grouping is an explicit finite set of verified identities. Common filename, signer or parent PID alone does not authorize recursion. A newly spawned helper is not part of previous consent. Unknown membership means no group expansion.
+
+T-06: User protection wins over a prior optimization plan. Restoration of an already-applied setting is a separate operation and does not require new optimization consent; identity and restoration safety checks still apply.
+
+## Graceful close and optional force
+
+A-01: Prefer a documented application quit adapter where implemented. Generic fallback enumerates verified top-level windows for each selected lifetime and sends bounded `WM_CLOSE` requests. Verify window ownership immediately before each request. Do not inspect window titles or answer application dialogs. Limit requests to 16 windows per target. [S6]
+
+A-02: Each window request has at most a one-second message timeout. Overall close observation is bounded (initial default five seconds after requests). Failure/timeout is a recorded outcome, not force permission. Holding a process handle does not make HWND ownership changes atomic; minimize and disclose that residual race.
+
+A-03: `WM_CLOSE` accepted is not exit. Verify process-handle signaling; if it remains live, report close requested/refused-or-pending rather than 'closed'. Some applications can later honor an already delivered close; cancellation cannot retract the message. Uncertain closure attribution cannot trigger automatic reopening.
+
+A-04: Direct Force is allowed only with fresh, separate consent for the exact current identities. Call `TerminateProcess` with the required access and bounded exit verification. The call starts termination; pending I/O can delay completion. Unverified exit is indeterminate, not successful. No automatic normal-to-force escalation. [S7]
+
+A-05: No normal/force request is automatically repeated on recovery or on a replacement lifetime. At most one automated close attempt per selected application per session. Respawn or a deliberate/ambiguous user reopen is reported, not fought with a kill loop.
+
+A-06: Reclaimed processing/memory is measured after closure when telemetry is available. Helper survival/shared allocations prohibit whole-application or exact-byte claims. Exited selected processes are reported separately from observed GPU change.
+
+## GPU scheduling
+
+L-01: Use the documented process-handle APIs `D3DKMTGetProcessSchedulingPriorityClass` and `D3DKMTSetProcessSchedulingPriorityClass`. These expose scheduling class through Gdi32. Getter, setter, verification and exact restoration must all be possible for a target before treating a policy as reversible. [S8]
+
+L-02: The candidate class is BelowNormal. If the original class is already BelowNormal or lower, record no change; never raise it to the configured nominal target. No game priority boost, Realtime or starving/Idle policy is applied by default.
+
+L-03: Query original, durably journal intent, apply, query again and classify the result. API success is not GPU-workload coverage or performance evidence. Unsupported/denied read or write skips/fails this action without undocumented alternatives.
+
+L-04: This is an experimental, explicitly opted-in capability until driver/HAGS/API-workload and hardware performance validation is recorded. A controlled-fixture read/set/read/restore probe establishes only API round-trip behavior. No experimental operation is silently promoted to a default because it compiles or works on a hosted runner.
+
+L-05: Scheduling preference is not a hard GPU quota, allocation release, cancellation of submitted work, exclusivity or a guaranteed preemption policy. `IDXGIDevice::SetGPUThreadPriority` requires an application's own device interface and is not our cross-process mechanism. Do not inject to obtain it. [S9]
+
+## Supporting policies
+
+| Action | Desired value | Required readback/restoration |
 | --- | --- | --- |
-| Keep | Required or user-protected functionality | No mutation |
-| Graceful close | End an unnecessary application's work | Core feature; explicit app-group consent |
-| Force terminate | End an approved app that will not exit normally | Separate destructive consent; bounded and verified |
-| Cooperative pause | Stop a specific supported background GPU workload | App-specific; CPU-thread suspension is not an equivalent substitute |
-| Lower GPU scheduling class | Reduce scheduling preference of an eligible retained background app | Experimental until read/apply/verify/restore and performance tests pass |
-| Supporting CPU/memory policies | Reduce other measured competition | Secondary; never described as a GPU ban |
+| CPU BelowNormal | Lower only if the existing class is above BelowNormal; preserve Idle and BelowNormal | Exact original process priority class; never Realtime [S10] |
+| EcoQoS execution speed | Set execution-speed control/state bits only when the getter supports the target | Preserve complete Version/ControlMask/StateMask; unreadable OS-managed state means unsupported [S11] |
+| Low memory priority | At most level 2; preserve an existing level 1 or 2 | Exact original process memory-priority value, not page residency [S11] |
+| CPU Sets | Not a universal default; only a separately validated topology-specific policy | Original assignment including empty/unassigned state; thread affinity may override [S12] |
+| Cooperative workload pause | Only a specific implemented app adapter | Prior running/paused state, supported pause/resume and conflict check |
+| Service stop | Only a separately reviewed named-service adapter, not generic process termination | Original service state, dependency inspection, stop/start verification; never disable startup type [S13] |
 
-There is no assumed supported, universal commodity-Windows API that gives arbitrary third-party apps a reliable GPU usage cap of zero while leaving all their other functions intact. Any future quota mechanism needs its own documented scope and evidence. Scheduling preference must never be advertised as such a cap.
+L-06: CPU policies are secondary and MUST NOT be labeled GPU blocking. A successful setter with unreadable original state is not eligible for normal reversible use.
 
-## Application closure
+L-07: No arbitrary `SuspendThread`/process suspension as a GPU-pause substitute: synchronization owners can deadlock, and it is not a verified GPU-memory-release operation. No arbitrary Job Object attachment for a temporary policy, because an existing process cannot be detached. Do not use job I/O rate control marked unsupported on Windows 10 1607 and later. [S14][S15]
 
-Use an application-specific normal quit path when available. A generic GUI fallback may request `WM_CLOSE` on verified top-level windows using bounded messaging. A close message is a request and may invoke a save prompt; it is not proof the process or its GPU workers exited. [S5]
+## Unsupported features and future adapters
 
-Do not close by wildcard image name, recursively kill an unreviewed process tree, or terminate only a browser's GPU helper while pretending the application has stopped. Establish a finite group of eligible processes using lifetime identity and verified application relationships. Re-check every target immediately before acting; parent PID or common filename alone is insufficient.
+Missing pause/service/CPU-set/launcher adapters return explicit unsupported/not implemented results. They never fall back to process suspension, cascading service stops or registry edits. An app adapter must define discovery, identity, readable prior state, supported operation, bounded verification, recovery and effect tests before registration.
 
-Record the request and wait for process-exit evidence. If helpers remain, report partial closure and keep observing their resource use. New helpers are new targets, not automatically included in old force consent. Reclaimed GPU resources are measured after exit; no immediate or exact byte release is promised.
+Do not move live third-party GPU contexts to an iGPU, force MUX/display-route changes, terminate DWM or reset a driver. HAGS, MPO, fullscreen optimizations and graphics/driver profiles stay unchanged. A future launch-time GPU preference is a separate measured capability, not part of the generic session policy.
 
-On a save prompt, cancellation, access denial or timeout, keep the app open unless the user separately confirms force termination. Never auto-dismiss save dialogs. If a chosen closure cannot be completed, show the degraded plan and allow continuing or cancelling; do not silently escalate.
+## Primary API evidence
 
-`TerminateProcess` is an optional implementation path with the necessary access rights. It initiates termination; pending I/O may delay completion and DLL cleanup is not normal application shutdown. Verify exit using a process handle and bounded waits, and report timeout/unknown explicitly. It can lose unsaved work. [S6]
+Reviewed for contract semantics; real-host tests remain required.
 
-No user process is actually terminated by writing these specifications. Future integration tests must use controlled fixture applications.
-
-### Relaunches and new GPU consumers
-
-Observe new process lifetimes during a session. Default behavior is notify/defer, not automatic killing. A previously authorized automatic graceful-close rule may be used only within its explicit scope, after identity and protection checks. A deliberate user reopen overrides automation for that session; ambiguous launch origin is treated conservatively.
-
-Do not fight a launcher, service recovery loop or updater with repeated kills. The initial product makes at most one automated closure attempt per approved application per session; persistent respawn is reported for review. A future keep-closed policy needs separate approval, bounded retries, cancellation and tests.
-
-## Cooperative GPU pause
-
-An app adapter must specify: workload discovery, readable pause/running state, a supported pause operation, verification, resume and conflict detection. Pause only the workload selected by the user; do not claim generic support for all CUDA, Vulkan, browser or rendering applications.
-
-Thread suspension is excluded as a general GPU-pause implementation. It can stop CPU-side execution without a verified release of GPU allocations or an application-safe pause. Windows documents deadlock risk when suspending threads that own synchronization objects. [S7]
-
-## Low-level GPU scheduling spike
-
-Investigate the documented `D3DKMTGetProcessSchedulingPriorityClass` and `D3DKMTSetProcessSchedulingPriorityClass` functions. They accept a process handle and expose a read/write scheduling class through Gdi32; this route does not require inventing a new kernel driver. [S8]
-
-Enable an action only when the exact host/process combination permits querying the original class, setting an allowed lower class, verifying it and restoring it. Probe required rights, OS build, WDDM/driver behavior, HAGS state and API workload coverage on a controlled helper before enabling a profile. An API success code is not a benchmark result.
-
-Never increase an already lower-priority background app's class. Preserve the original value. Below-normal is the initial candidate; idle/starving and realtime classes are not default optimization policies. Do not mutate games, DWM, protected processes or required low-latency companion apps in this first spike.
-
-`IDXGIDevice::SetGPUThreadPriority` operates on a DXGI device interface; it is not a general way for our process to change another application's device. Do not inject into games to obtain such an interface. Microsoft warns that inappropriate GPU-priority changes can reduce rendering performance. [S9]
-
-Scheduling changes do not promise a GPU percentage ceiling, immediate cancellation of queued work, memory reclamation or exclusive ownership. Unsupported or unreadable configurations fall back to approved closure/pause or observation, not undocumented privileged methods.
-
-## Supporting low-level policies
-
-| Policy | Capability and boundary | Rollback prerequisite |
-| --- | --- | --- |
-| CPU process priority | `GetPriorityClass` / `SetPriorityClass`; lower selected competitors, no Realtime. CPU priority alone does not control disk/memory or GPU work. [S10] | Read and restore the original class |
-| EcoQoS | `GetProcessInformation` / `SetProcessInformation` with power-throttling information, where working on the target build. Not a GPU access control. [S11] | Query and round-trip Version, ControlMask and StateMask; skip if original management state cannot be read |
-| Memory priority | Process memory-priority APIs where supported; no forced cache flush or claim of restoring page residency. [S11] | Read and restore the original priority |
-| CPU Sets | Tested topology-aware process-default assignment; not exclusive core reservation, and thread/affinity constraints still matter. [S12] | Preserve the original set including no-assignment state; skip incompatible cases |
-| Service/workload pause | App adapter or approved SCM stop; later scope, with dependency inspection. Never stop a shared service host or cascade through protected dependencies. [S13] | Verified original state, bounded completion and supported restart/resume |
-
-CPU Sets, memory-priority mutation and service policies follow the first GPU/closure path. A documented API with a failed getter is not eligible for automatic reversible use.
-
-Do not attach arbitrary running user apps to new Job Objects just to throttle them: the association cannot be undone for the existing process. Do not base I/O limiting on `SetIoRateControlInformationJobObject`, which Microsoft marks unsupported on Windows 10 1607 and newer. [S14]
-
-## Display and hybrid-GPU boundaries
-
-Required compositor/display/driver work is not waste to eliminate. Never terminate DWM, reset the display driver, disable an adapter, change monitor routing or force a MUX transition during a session.
-
-Moving an already-running third-party app's GPU context to an iGPU is not an assumed feature. A future launch-time GPU preference feature must use a separately verified mechanism, disclose restart requirements and measure shared thermal/memory-bandwidth effects; it is not in the first implementation.
-
-HAGS, MPO, fullscreen optimizations, refresh rate, HDR, VRR, graphics quality, driver profiles and frame generation remain unchanged in automatic sessions. No registry folklore is a substitute for an API contract.
-
-## Primary evidence
-
-Reviewed 2026-09-09. Documentation establishes API semantics, not product compatibility or measured gains.
-
-- [S1 - Microsoft: GPUs in Task Manager](https://devblogs.microsoft.com/directx/gpus-in-the-task-manager/)
-- [S2 - PdhAddEnglishCounterW](https://learn.microsoft.com/en-us/windows/win32/api/pdh/nf-pdh-pdhaddenglishcounterw)
-- [S3 - QueryVideoMemoryInfo](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_4/nf-dxgi1_4-idxgiadapter3-queryvideomemoryinfo)
-- [S4 - GPU process memory counter issue](https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/gpu-process-memory-counters-report-wrong-value)
-- [S5 - WM_CLOSE](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-close) and [bounded messaging](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendmessagetimeoutw)
-- [S6 - TerminateProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess)
-- [S7 - SuspendThread](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-suspendthread)
-- [S8 - Get GPU scheduling class](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/d3dkmthk/nf-d3dkmthk-d3dkmtgetprocessschedulingpriorityclass) and [set GPU scheduling class](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/d3dkmthk/nf-d3dkmthk-d3dkmtsetprocessschedulingpriorityclass)
-- [S9 - IDXGIDevice::SetGPUThreadPriority](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgidevice-setgputhreadpriority)
-- [S10 - SetPriorityClass](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setpriorityclass)
-- [S11 - GetProcessInformation](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessinformation) and [SetProcessInformation](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessinformation)
-- [S12 - CPU Sets](https://learn.microsoft.com/en-us/windows/win32/procthread/cpu-sets)
-- [S13 - Stopping a service](https://learn.microsoft.com/en-us/windows/win32/services/stopping-a-service)
-- [S14 - Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects) and [unsupported job I/O rate control](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-setioratecontrolinformationjobobject)
+- [S1 PdhAddEnglishCounterW](https://learn.microsoft.com/en-us/windows/win32/api/pdh/nf-pdh-pdhaddenglishcounterw)
+- [S2 PdhGetFormattedCounterArrayW](https://learn.microsoft.com/en-us/windows/win32/api/pdh/nf-pdh-pdhgetformattedcounterarrayw)
+- [S3 Microsoft: GPUs in Task Manager](https://devblogs.microsoft.com/directx/gpus-in-the-task-manager/)
+- [S4 QueryVideoMemoryInfo](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_4/nf-dxgi1_4-idxgiadapter3-queryvideomemoryinfo)
+- [S5 GPU Process Memory counter issue](https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/gpu-process-memory-counters-report-wrong-value)
+- [S6 WM_CLOSE](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-close) and [SendMessageTimeoutW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendmessagetimeoutw)
+- [S7 TerminateProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess)
+- [S8 Get GPU class](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/d3dkmthk/nf-d3dkmthk-d3dkmtgetprocessschedulingpriorityclass) and [set GPU class](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/d3dkmthk/nf-d3dkmthk-d3dkmtsetprocessschedulingpriorityclass)
+- [S9 SetGPUThreadPriority](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgidevice-setgputhreadpriority)
+- [S10 SetPriorityClass](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setpriorityclass)
+- [S11 GetProcessInformation](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessinformation) and [SetProcessInformation](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessinformation)
+- [S12 CPU Sets](https://learn.microsoft.com/en-us/windows/win32/procthread/cpu-sets)
+- [S13 Stopping a service](https://learn.microsoft.com/en-us/windows/win32/services/stopping-a-service)
+- [S14 SuspendThread](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-suspendthread)
+- [S15 Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects) and [unsupported job I/O rate control](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-setioratecontrolinformationjobobject)
