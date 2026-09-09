@@ -1,4 +1,4 @@
-# retry reviewed source bootstrap 2026-09-10 (SetFocus import fix)
+# retry reviewed source bootstrap 2026-09-10 (module-safe SetFocus import)
 name: Bootstrap reviewed v0.4 source (verified)
 on:
   push:
@@ -39,9 +39,11 @@ jobs:
           if (-not (Select-String -Path src/windows/simple_ui.rs -Pattern 'const PERMANENT:' -Quiet)) { throw 'Permanent cleanup UI source not present' }
           if (-not (Test-Path src/windows/startup.rs)) { throw 'Startup adapter missing' }
           $ui = Get-Content src/windows/simple_ui.rs -Raw
+          $doc = '//! Small native front door: On/Off first, app permissions behind Settings.'
           $import = 'use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;'
           if (-not $ui.Contains($import)) {
-            $ui = $import + "`r`n" + $ui
+            if (-not $ui.Contains($doc)) { throw 'Reviewed module header changed unexpectedly' }
+            $ui = $ui.Replace($doc, $doc + "`r`n" + $import)
             Set-Content src/windows/simple_ui.rs -Value $ui -Encoding utf8 -NoNewline
           }
       - name: Install pinned Rust toolchain
