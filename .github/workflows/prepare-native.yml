@@ -1,0 +1,55 @@
+name: Temporary native validation preparation
+on:
+  push:
+    branches: [codex/behavioral-validation]
+    paths:
+      - scripts/prepare_native.py
+      - .github/workflows/prepare-native.yml
+permissions:
+  contents: write
+jobs:
+  prepare:
+    if: github.repository == 'abrahamahn/process-optimizer' && github.ref == 'refs/heads/codex/behavioral-validation'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Apply reviewed exact-match corrections
+        run: python scripts/prepare_native.py
+      - name: Install pinned toolchain
+        run: rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy
+      - name: Format and resolve reproducible dependencies
+        shell: pwsh
+        run: |
+          cargo fmt --all
+          if ($LASTEXITCODE -ne 0) { throw 'Formatting failed' }
+          cargo generate-lockfile
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency resolution failed' }
+      - name: Verify native code with test-owned fixtures
+        run: cargo test --all-targets -- --nocapture
+      - name: Commit verified source only to the temporary validation branch
+        shell: pwsh
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.lock src tests
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 1) {
+            git commit -m 'fix: correct Win32 build types and normalize native source'
+            if ($LASTEXITCODE -ne 0) { throw 'Source commit failed' }
+            git push origin HEAD:refs/heads/codex/behavioral-validation
+            if ($LASTEXITCODE -ne 0) { throw 'Branch advanced; refusing to overwrite it' }
+          } elseif ($LASTEXITCODE -ne 0) { throw 'Cannot inspect staged changes' }
+          git rev-parse HEAD
+      - name: Archive reviewed source for inspection
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force review-artifact | Out-Null
+          Compress-Archive -Path src,tests,specs,Cargo.toml,Cargo.lock,README.md,rust-toolchain.toml -DestinationPath review-artifact/review-source.zip
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: reviewed-native-source
+          path: review-artifact/review-source.zip
+          retention-days: 3
