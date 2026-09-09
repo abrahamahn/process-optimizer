@@ -9,15 +9,15 @@ const ODS_FOCUS_STYLE: u32 = 0x0010;
 
 #[repr(C)]
 struct DrawItem {
-    CtlType: u32,
-    CtlID: u32,
-    itemID: u32,
-    itemAction: u32,
-    itemState: u32,
-    hwndItem: HWND,
-    hDC: HDC,
-    rcItem: RECT,
-    itemData: usize,
+    ctl_type: u32,
+    ctl_id: u32,
+    item_id: u32,
+    item_action: u32,
+    item_state: u32,
+    hwnd_item: HWND,
+    h_dc: HDC,
+    rc_item: RECT,
+    item_data: usize,
 }
 '''
 if anchor not in text:
@@ -26,5 +26,14 @@ text = text.replace(anchor, insert, 1)
 text = text.replace('DRAWITEMSTRUCT', 'DrawItem')
 text = text.replace('ODS_SELECTED as u32', 'ODS_SELECTED_STYLE')
 text = text.replace('ODS_FOCUS as u32', 'ODS_FOCUS_STYLE')
+for old, new in [
+    ('.CtlID', '.ctl_id'),
+    ('.itemID', '.item_id'),
+    ('.itemState', '.item_state'),
+    ('.hwndItem', '.hwnd_item'),
+    ('.hDC', '.h_dc'),
+    ('.rcItem', '.rc_item'),
+]:
+    text = text.replace(old, new)
 path.write_text(text, encoding='utf-8', newline='\n')
-print('owner-draw ABI made local and windows-sys-version independent')
+print('owner-draw ABI made local, snake-case, and windows-sys-version independent')
