@@ -1,6 +1,9 @@
 #![cfg(windows)]
-//! Only read our process or use a fresh directory created by the test.
-use process_optimizer::windows::{process, storage};
+//! Only read our process or mutate fixtures created by this test.
+use process_optimizer::{
+    manual::StartupValueKind,
+    windows::{process, startup, storage},
+};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -68,4 +71,42 @@ fn storage_rejects_a_directory_disguised_as_database() {
     let temp = TempDirectory::new();
     std::fs::create_dir(temp.0.join("state.sqlite3")).unwrap();
     assert!(storage::verify_store_entries(&temp.0).is_err());
+}
+
+#[test]
+fn current_user_run_entry_round_trips_without_touching_existing_startup() {
+    let name = format!(
+        "ProcessOptimizer-Test-{}-{}",
+        std::process::id(),
+        SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    );
+    let exe = std::env::current_exe().unwrap();
+    let command = format!("\"{}\" --startup-fixture", exe.display());
+
+    // Create only this test-owned value using the same restoration API that the
+    // product uses, then prove disable and restore are exact and reversible.
+    startup::restore(&name, &command, &StartupValueKind::String).unwrap();
+    let entry = startup::entries()
+        .unwrap()
+        .into_iter()
+        .find(|e| e.value_name == name)
+        .expect("test-owned startup value must be enumerable");
+    assert_eq!(entry.command, command);
+
+    startup::disable(&entry).unwrap();
+    assert!(!startup::entries()
+        .unwrap()
+        .iter()
+        .any(|e| e.value_name == name));
+
+    startup::restore(&name, &command, &StartupValueKind::String).unwrap();
+    let restored = startup::entries()
+        .unwrap()
+        .into_iter()
+        .find(|e| e.value_name == name)
+        .expect("restored test-owned startup value must exist");
+    assert_eq!(restored.command, command);
+
+    // Always leave the host as we found it except for our unique temporary key.
+    startup::disable(&restored).unwrap();
 }
