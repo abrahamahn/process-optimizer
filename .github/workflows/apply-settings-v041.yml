@@ -5,6 +5,7 @@ on:
     paths:
       - scripts/apply_settings_controls_v041.py
       - scripts/prep_settings_patch_v041.py
+      - scripts/fix_apply_settings_script_v041.py
       - .github/workflows/apply-settings-v041.yml
 permissions:
   contents: write
@@ -19,6 +20,8 @@ jobs:
         run: |
           python scripts/prep_settings_patch_v041.py
           if ($LASTEXITCODE -ne 0) { throw 'Patch anchor normalization failed' }
+          python scripts/fix_apply_settings_script_v041.py
+          if ($LASTEXITCODE -ne 0) { throw 'Patch driver fix failed' }
           python scripts/apply_settings_controls_v041.py
           if ($LASTEXITCODE -ne 0) { throw 'Settings-control patch failed' }
       - name: Install pinned Rust toolchain
