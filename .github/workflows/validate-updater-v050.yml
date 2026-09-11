@@ -41,6 +41,7 @@ jobs:
           $root = Join-Path $env:RUNNER_TEMP 'po-updater-e2e'
           $install = Join-Path $root 'installed'
           $pending = Join-Path $root 'pending'
+          $errorFile = Join-Path $root 'updater-error.txt'
           New-Item -ItemType Directory -Force $install,$pending | Out-Null
           Copy-Item target/release/process-optimizer.exe (Join-Path $install 'process-optimizer.exe')
           Copy-Item target/release/process-optimizer-updater.exe (Join-Path $install 'process-optimizer-updater.exe')
@@ -48,8 +49,11 @@ jobs:
           Copy-Item target/release/process-optimizer-updater.exe (Join-Path $pending 'process-optimizer-updater-next.exe')
           $appHash = (Get-FileHash (Join-Path $pending 'process-optimizer-next.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
           $updaterHash = (Get-FileHash (Join-Path $pending 'process-optimizer-updater-next.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
-          & target/release/process-optimizer-updater.exe --apply --install-dir $install --app (Join-Path $pending 'process-optimizer-next.exe') --updater (Join-Path $pending 'process-optimizer-updater-next.exe') --app-sha256 $appHash --updater-sha256 $updaterHash --parent-pid 0 --test-no-restart
-          if ($LASTEXITCODE -ne 0) { throw 'Updater replacement fixture failed.' }
+          & target/release/process-optimizer-updater.exe --apply --install-dir $install --app (Join-Path $pending 'process-optimizer-next.exe') --updater (Join-Path $pending 'process-optimizer-updater-next.exe') --app-sha256 $appHash --updater-sha256 $updaterHash --parent-pid 0 --test-no-restart --error-file $errorFile
+          if ($LASTEXITCODE -ne 0) {
+            if (Test-Path $errorFile) { Write-Host "Updater error: $(Get-Content $errorFile -Raw)" }
+            throw 'Updater replacement fixture failed.'
+          }
           $actual = (Get-FileHash (Join-Path $install 'process-optimizer.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actual -ne $appHash) { throw 'Updater did not replace the application file.' }
       - name: Install Inno Setup
