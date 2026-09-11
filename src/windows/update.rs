@@ -55,7 +55,7 @@ fn get_https(url: &str, max_bytes: usize) -> AppResult<Vec<u8>> {
     unsafe {
         let session = Internet(WinHttpOpen(
             agent.as_ptr(),
-            WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY as u32,
+            WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
             null(),
             null(),
             0,
@@ -75,7 +75,7 @@ fn get_https(url: &str, max_bytes: usize) -> AppResult<Vec<u8>> {
         let connect = Internet(WinHttpConnect(
             session.0,
             host.as_ptr(),
-            INTERNET_DEFAULT_HTTPS_PORT as u16,
+            INTERNET_DEFAULT_HTTPS_PORT,
             0,
         ));
         if connect.0.is_null() {
