@@ -28,13 +28,14 @@ fn value(args: &[String], name: &str) -> Result<String, String> {
 fn wait_for_parent(pid: u32) -> Result<(), String> {
     use windows_sys::Win32::{
         Foundation::{CloseHandle, WAIT_TIMEOUT},
-        System::Threading::{OpenProcess, WaitForSingleObject, SYNCHRONIZE},
+        System::Threading::{OpenProcess, WaitForSingleObject},
     };
+    const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
     if pid == 0 {
         return Ok(());
     }
     unsafe {
-        let handle = OpenProcess(SYNCHRONIZE, 0, pid);
+        let handle = OpenProcess(SYNCHRONIZE_ACCESS, 0, pid);
         if handle.is_null() {
             // The parent may already be gone between spawn and this call.
             return Ok(());
@@ -113,7 +114,9 @@ fn run() -> Result<(), String> {
     if let Err(error) = apply {
         restore(&target_app, &app_backup);
         restore(&target_updater, &updater_backup);
-        return Err(format!("Update failed and the previous files were restored. {error}"));
+        return Err(format!(
+            "Update failed and the previous files were restored. {error}"
+        ));
     }
 
     if no_restart {
@@ -143,7 +146,9 @@ fn run() -> Result<(), String> {
             restore(&target_app, &app_backup);
             restore(&target_updater, &updater_backup);
             let _ = Command::new(&target_app).spawn();
-            return Err("The updated app exited immediately; the previous version was restored.".into());
+            return Err(
+                "The updated app exited immediately; the previous version was restored.".into(),
+            );
         }
     }
 
