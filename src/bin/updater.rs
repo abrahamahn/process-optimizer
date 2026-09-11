@@ -3,6 +3,14 @@
 #[cfg(windows)]
 fn main() {
     if let Err(error) = run() {
+        if let Some(path) = std::env::args()
+            .collect::<Vec<_>>()
+            .windows(2)
+            .find(|pair| pair[0] == "--error-file")
+            .map(|pair| pair[1].clone())
+        {
+            let _ = std::fs::write(path, &error);
+        }
         show_error(&error);
         std::process::exit(1);
     }
