@@ -10,5 +10,6 @@ pub mod policy;
 pub mod profiles;
 pub mod reopen;
 pub mod report;
+pub mod update;
 #[cfg(windows)]
 pub mod windows;
