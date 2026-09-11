@@ -1,0 +1,114 @@
+name: Publish Windows release
+on:
+  push:
+    branches: [main]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - src/**
+      - installer/**
+      - scripts/build-installer.ps1
+      - README.md
+      - .github/workflows/release.yml
+permissions:
+  contents: write
+concurrency:
+  group: process-optimizer-release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Resolve version and existing release
+        id: meta
+        shell: pwsh
+        run: |
+          $text = Get-Content Cargo.toml -Raw
+          $m = [regex]::Match($text, '(?m)^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"')
+          if (-not $m.Success) { throw 'Could not parse Cargo package version.' }
+          $version = $m.Groups[1].Value
+          $tag = "v$version"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          gh release view $tag --repo '${{ github.repository }}' *> $null
+          if ($LASTEXITCODE -eq 0) { "exists=true" >> $env:GITHUB_OUTPUT } else { "exists=false" >> $env:GITHUB_OUTPUT }
+      - name: Install pinned Rust toolchain
+        if: steps.meta.outputs.exists != 'true'
+        run: rustup toolchain install 1.90.0 --profile minimal --component clippy --component rustfmt
+      - name: Full source validation
+        if: steps.meta.outputs.exists != 'true'
+        shell: pwsh
+        run: |
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE -ne 0) { throw 'Formatting failed.' }
+          New-Item -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Force | Out-Null
+          cargo test --locked --all-targets -- --nocapture
+          if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
+          cargo test --locked --test windows_contract -- --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { throw 'Disposable force fixture failed.' }
+          ./scripts/ci-normal-user.ps1
+          cargo clippy --locked --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Clippy failed.' }
+      - name: Install Inno Setup
+        if: steps.meta.outputs.exists != 'true'
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+      - name: Build app, updater and installer
+        if: steps.meta.outputs.exists != 'true'
+        shell: pwsh
+        run: |
+          ./scripts/build-installer.ps1
+          ./scripts/check-portable.ps1
+      - name: Create release assets and manifest
+        if: steps.meta.outputs.exists != 'true'
+        shell: pwsh
+        run: |
+          $version = '${{ steps.meta.outputs.version }}'
+          $tag = '${{ steps.meta.outputs.tag }}'
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/process-optimizer.exe dist/process-optimizer.exe -Force
+          Copy-Item target/release/process-optimizer-updater.exe dist/process-optimizer-updater.exe -Force
+          $appHash = (Get-FileHash dist/process-optimizer.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $updaterHash = (Get-FileHash dist/process-optimizer-updater.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $setupHash = (Get-FileHash dist/ProcessOptimizerSetup.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $base = "https://github.com/${{ github.repository }}/releases/download/$tag"
+          [ordered]@{
+            schema = 1
+            version = $version
+            app_url = "$base/process-optimizer.exe"
+            app_sha256 = $appHash
+            updater_url = "$base/process-optimizer-updater.exe"
+            updater_sha256 = $updaterHash
+            installer_url = "$base/ProcessOptimizerSetup.exe"
+          } | ConvertTo-Json | Set-Content dist/update-manifest.json -Encoding utf8
+          @(
+            "$appHash  process-optimizer.exe",
+            "$updaterHash  process-optimizer-updater.exe",
+            "$setupHash  ProcessOptimizerSetup.exe"
+          ) | Set-Content dist/SHA256SUMS.txt -Encoding ascii
+          Copy-Item README.md dist/README.md -Force
+          Set-Content dist/SOURCE-COMMIT.txt '${{ github.sha }}' -Encoding ascii
+          Compress-Archive -Force -Path dist/process-optimizer.exe,dist/process-optimizer-updater.exe,dist/README.md,dist/SOURCE-COMMIT.txt -DestinationPath dist/process-optimizer-windows-x64.zip
+      - name: Publish GitHub Release
+        if: steps.meta.outputs.exists != 'true'
+        shell: pwsh
+        run: |
+          $tag = '${{ steps.meta.outputs.tag }}'
+          gh release create $tag `
+            dist/ProcessOptimizerSetup.exe `
+            dist/process-optimizer.exe `
+            dist/process-optimizer-updater.exe `
+            dist/process-optimizer-windows-x64.zip `
+            dist/update-manifest.json `
+            dist/SHA256SUMS.txt `
+            --repo '${{ github.repository }}' `
+            --target '${{ github.sha }}' `
+            --title "Process Optimizer $tag" `
+            --generate-notes `
+            --latest
