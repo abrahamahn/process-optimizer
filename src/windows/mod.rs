@@ -8,6 +8,7 @@ pub mod simple_ui;
 pub mod startup;
 pub mod storage;
 pub mod ui;
+pub mod update;
 
 pub fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
