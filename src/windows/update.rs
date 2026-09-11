@@ -10,12 +10,14 @@ use std::{
 use windows_sys::Win32::{
     Foundation::HWND,
     Networking::WinHttp::*,
-    UI::WindowsAndMessaging::{MessageBoxW, IDYES, MB_DEFBUTTON2, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_YESNO},
+    UI::WindowsAndMessaging::{
+        MessageBoxW, IDYES, MB_DEFBUTTON2, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_YESNO,
+    },
 };
 
 const MAX_DOWNLOAD_BYTES: usize = 64 * 1024 * 1024;
 
-struct Internet(HINTERNET);
+struct Internet(*mut c_void);
 impl Drop for Internet {
     fn drop(&mut self) {
         if !self.0.is_null() {
@@ -59,10 +61,16 @@ fn get_https(url: &str, max_bytes: usize) -> AppResult<Vec<u8>> {
             0,
         ));
         if session.0.is_null() {
-            return Err(format!("Could not open update network session: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "Could not open update network session: {}",
+                std::io::Error::last_os_error()
+            ));
         }
         if WinHttpSetTimeouts(session.0, 10_000, 10_000, 30_000, 30_000) == 0 {
-            return Err(format!("Could not configure update network timeouts: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "Could not configure update network timeouts: {}",
+                std::io::Error::last_os_error()
+            ));
         }
         let connect = Internet(WinHttpConnect(
             session.0,
@@ -71,7 +79,10 @@ fn get_https(url: &str, max_bytes: usize) -> AppResult<Vec<u8>> {
             0,
         ));
         if connect.0.is_null() {
-            return Err(format!("Could not connect to GitHub: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "Could not connect to GitHub: {}",
+                std::io::Error::last_os_error()
+            ));
         }
         let request = Internet(WinHttpOpenRequest(
             connect.0,
@@ -83,7 +94,10 @@ fn get_https(url: &str, max_bytes: usize) -> AppResult<Vec<u8>> {
             WINHTTP_FLAG_SECURE,
         ));
         if request.0.is_null() {
-            return Err(format!("Could not create update request: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "Could not create update request: {}",
+                std::io::Error::last_os_error()
+            ));
         }
         let header_len = (headers.len().saturating_sub(1)) as u32;
         if WinHttpSendRequest(
@@ -96,10 +110,16 @@ fn get_https(url: &str, max_bytes: usize) -> AppResult<Vec<u8>> {
             0,
         ) == 0
         {
-            return Err(format!("Could not send update request: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "Could not send update request: {}",
+                std::io::Error::last_os_error()
+            ));
         }
-        if WinHttpReceiveResponse(request.0, null()) == 0 {
-            return Err(format!("Could not receive update response: {}", std::io::Error::last_os_error()));
+        if WinHttpReceiveResponse(request.0, null_mut()) == 0 {
+            return Err(format!(
+                "Could not receive update response: {}",
+                std::io::Error::last_os_error()
+            ));
         }
 
         let mut output = Vec::new();
@@ -113,7 +133,10 @@ fn get_https(url: &str, max_bytes: usize) -> AppResult<Vec<u8>> {
                 &mut read,
             ) == 0
             {
-                return Err(format!("Could not read update response: {}", std::io::Error::last_os_error()));
+                return Err(format!(
+                    "Could not read update response: {}",
+                    std::io::Error::last_os_error()
+                ));
             }
             if read == 0 {
                 break;
@@ -196,7 +219,9 @@ fn launch_updater(
         .arg("--parent-pid")
         .arg(std::process::id().to_string())
         .creation_flags(0x08000000);
-    command.spawn().map_err(|e| format!("Could not launch updater: {e}"))?;
+    command
+        .spawn()
+        .map_err(|e| format!("Could not launch updater: {e}"))?;
     Ok(())
 }
 
@@ -230,7 +255,10 @@ pub fn interactive(window: HWND) -> AppResult<bool> {
     let Some(manifest) = check_latest()? else {
         info(
             window,
-            &format!("You are up to date.\n\nInstalled version: {}", env!("CARGO_PKG_VERSION")),
+            &format!(
+                "You are up to date.\n\nInstalled version: {}",
+                env!("CARGO_PKG_VERSION")
+            ),
         );
         return Ok(false);
     };
