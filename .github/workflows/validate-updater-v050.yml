@@ -1,0 +1,94 @@
+name: Validate installer and updater v0.5.0
+on:
+  push:
+    branches: [codex/installer-updater-v050]
+permissions:
+  contents: write
+concurrency:
+  group: validate-updater-v050
+  cancel-in-progress: true
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Apply reviewed Settings update button
+        run: python scripts/apply_update_ui_v050.py
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.90.0 --profile minimal --component clippy --component rustfmt
+      - name: Refresh locked dependencies
+        run: cargo generate-lockfile
+      - name: Prepare disposable startup registry parent
+        shell: pwsh
+        run: New-Item -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Force | Out-Null
+      - name: Format and full tests
+        shell: pwsh
+        run: |
+          cargo fmt --all
+          cargo test --locked --all-targets -- --nocapture
+          if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
+          cargo test --locked --test windows_contract -- --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { throw 'Disposable force fixture failed.' }
+          ./scripts/ci-normal-user.ps1
+          cargo clippy --locked --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Clippy failed.' }
+      - name: Build app and updater
+        run: cargo build --locked --release --bin process-optimizer --bin process-optimizer-updater --bin optimizer-test-fixture
+      - name: Test updater replacement without restarting a fake app
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'po-updater-e2e'
+          $install = Join-Path $root 'installed'
+          $pending = Join-Path $root 'pending'
+          New-Item -ItemType Directory -Force $install,$pending | Out-Null
+          Copy-Item target/release/process-optimizer.exe (Join-Path $install 'process-optimizer.exe')
+          Copy-Item target/release/process-optimizer-updater.exe (Join-Path $install 'process-optimizer-updater.exe')
+          Copy-Item target/release/optimizer-test-fixture.exe (Join-Path $pending 'process-optimizer-next.exe')
+          Copy-Item target/release/process-optimizer-updater.exe (Join-Path $pending 'process-optimizer-updater-next.exe')
+          $appHash = (Get-FileHash (Join-Path $pending 'process-optimizer-next.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+          $updaterHash = (Get-FileHash (Join-Path $pending 'process-optimizer-updater-next.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+          & target/release/process-optimizer-updater.exe --apply --install-dir $install --app (Join-Path $pending 'process-optimizer-next.exe') --updater (Join-Path $pending 'process-optimizer-updater-next.exe') --app-sha256 $appHash --updater-sha256 $updaterHash --parent-pid 0 --test-no-restart
+          if ($LASTEXITCODE -ne 0) { throw 'Updater replacement fixture failed.' }
+          $actual = (Get-FileHash (Join-Path $install 'process-optimizer.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $appHash) { throw 'Updater did not replace the application file.' }
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+      - name: Build installer
+        shell: pwsh
+        run: ./scripts/build-installer.ps1
+      - name: Silent installer smoke in isolated directory
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'ProcessOptimizerInstalled'
+          $p = Start-Process -FilePath dist/ProcessOptimizerSetup.exe -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/DIR=$dir") -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw 'Installer silent smoke failed.' }
+          foreach ($leaf in @('process-optimizer.exe','process-optimizer-updater.exe','unins000.exe')) {
+            if (-not (Test-Path (Join-Path $dir $leaf))) { throw "Installer did not create $leaf" }
+          }
+          $app = Join-Path $dir 'process-optimizer.exe'
+          $p = Start-Process -FilePath $app -ArgumentList '--ui-smoke' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw 'Installed application smoke failed.' }
+      - name: Commit exact tested source to validation branch
+        shell: pwsh
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.lock src/windows/simple_ui.rs
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 1) {
+            git commit -m 'feat: add in-app GitHub release updates and installer'
+            if ($LASTEXITCODE -ne 0) { throw 'Commit failed.' }
+            git push origin HEAD:refs/heads/codex/installer-updater-v050
+            if ($LASTEXITCODE -ne 0) { throw 'Validation branch advanced; refusing overwrite.' }
+          } elseif ($LASTEXITCODE -ne 0) { throw 'Could not inspect staged changes.' }
+      - name: Archive installer and tested binaries
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: process-optimizer-v050-installer-review
+          path: |
+            dist/ProcessOptimizerSetup.exe
+            target/release/process-optimizer.exe
+            target/release/process-optimizer-updater.exe
+          retention-days: 7
