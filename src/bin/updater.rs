@@ -1,8 +1,7 @@
-#![cfg_attr(windows, windows_subsystem = "windows")]
-
 #[cfg(windows)]
 fn main() {
     if let Err(error) = run() {
+        eprintln!("{error}");
         if let Some(path) = std::env::args()
             .collect::<Vec<_>>()
             .windows(2)
@@ -11,7 +10,9 @@ fn main() {
         {
             let _ = std::fs::write(path, &error);
         }
-        show_error(&error);
+        if !std::env::args().any(|arg| arg == "--test-no-restart") {
+            show_error(&error);
+        }
         std::process::exit(1);
     }
 }
