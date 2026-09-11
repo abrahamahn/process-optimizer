@@ -1,5 +1,5 @@
 //! Small native front door: On/Off first, app permissions behind Settings.
-use super::{gpu, manual as native, process, runner, startup, wide};
+use super::{gpu, manual as native, process, runner, startup, update, wide};
 use crate::{
     gpu::{busiest_engine, dedicated_allocations},
     manual::{self, Config, RuleAction},
@@ -47,7 +47,8 @@ const COPY_LIST: u16 = 33;
 const COPY_TEXT: u16 = 34;
 const GAME_LABEL: u16 = 35;
 const PERMANENT_LABEL: u16 = 36;
-const PANEL: [u16; 17] = [
+const UPDATE: u16 = 37;
+const PANEL: [u16; 18] = [
     APPS,
     INTRO,
     SCAN,
@@ -65,6 +66,7 @@ const PANEL: [u16; 17] = [
     COPY_TEXT,
     GAME_LABEL,
     PERMANENT_LABEL,
+    UPDATE,
 ];
 const ES_MULTILINE_STYLE: u32 = 0x0004;
 const ES_AUTOVSCROLL_STYLE: u32 = 0x0040;
@@ -376,6 +378,12 @@ impl State {
             self.control(id, "BUTTON", label, WS_TABSTOP)?;
         }
         self.control(
+            UPDATE,
+            "BUTTON",
+            &format!("Check for updates — v{}", env!("CARGO_PKG_VERSION")),
+            WS_TABSTOP,
+        )?;
+        self.control(
             GPU_OPTION,
             "BUTTON",
             "Experimental GPU priority (Advanced only)",
@@ -495,6 +503,7 @@ impl State {
                     REPORT,
                     ADVANCED,
                     ACK,
+                    UPDATE,
                     PERMANENT,
                     RESTORE_STARTUP,
                     COPY_LIST,
@@ -560,8 +569,9 @@ impl State {
                     put(*id, 24 + i as i32 * (bw + 8), 500, bw, 48);
                 }
                 put(DETAIL, 24, 562, inner, 54);
-                for (i, id) in [REPORT, ADVANCED, ACK].iter().enumerate() {
-                    put(*id, 24 + i as i32 * (bw + 8), 630, bw, 42);
+                let utility_w = (inner - 24) / 4;
+                for (i, id) in [REPORT, ADVANCED, ACK, UPDATE].iter().enumerate() {
+                    put(*id, 24 + i as i32 * (utility_w + 8), 630, utility_w, 42);
                 }
                 put(SETTINGS, (w - 124) / 2, 698, 124, 32);
             }
@@ -1221,6 +1231,7 @@ impl State {
             let active = db.active()?;
             let idle = active.is_none();
             self.enable(ADVANCED, idle);
+            self.enable(UPDATE, idle);
             self.refresh_selected(idle);
             self.enable(SCAN, !self.scanning);
             self.enable(TOGGLE, true);
@@ -1320,6 +1331,13 @@ impl State {
             COPY_LIST => self.copy_toggle()?,
             REPORT => self.report()?,
             ADVANCED => runner::spawn_worker("--advanced", None)?,
+            UPDATE => {
+                if update::interactive(self.window)? {
+                    unsafe {
+                        DestroyWindow(self.window);
+                    }
+                }
+            }
             ACK => {
                 self.report()?;
                 if confirm(self.window,"Acknowledge unresolved recovery WITHOUT claiming restoration?\n\nThis keeps current settings and the recovery record. It does not undo a close or restore unsaved work."){runner::spawn_worker("--acknowledge",None)?;}
@@ -1474,7 +1492,7 @@ fn run_inner(smoke: bool, preview: bool) -> AppResult<()> {
         if smoke && !preview {
             // Only six primary controls, two actionable. No game-path field or browse button.
             let mut s = state.borrow_mut();
-            if s.widgets.len() != 23 {
+            if s.widgets.len() != 24 {
                 return Err("Incomplete simple UI.".into());
             }
             for id in PANEL {
