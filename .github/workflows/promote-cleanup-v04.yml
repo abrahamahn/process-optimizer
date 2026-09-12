@@ -1,0 +1,86 @@
+name: Promote verified v0.4 to main
+on:
+  push:
+    branches: [codex/cleanup-ui-v04]
+    paths: [.github/workflows/promote-cleanup-v04.yml]
+permissions:
+  contents: write
+concurrency:
+  group: promote-cleanup-v04
+  cancel-in-progress: false
+jobs:
+  promote:
+    if: github.repository == 'abrahamahn/process-optimizer' && github.ref == 'refs/heads/codex/cleanup-ui-v04'
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Verify reviewed feature shape
+        shell: pwsh
+        run: |
+          if (-not (Test-Path src/windows/startup.rs)) { throw 'Startup cleanup adapter missing' }
+          if (-not (Select-String -Path src/windows/simple_ui.rs -Pattern 'const PERMANENT:' -Quiet)) { throw 'Two-mode UI source missing' }
+          if (-not (Select-String -Path tests/windows_hardening.rs -Pattern 'current_user_run_entry_round_trips_without_touching_existing_startup' -Quiet)) { throw 'Owned HKCU Run round-trip test missing' }
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy
+      - name: Prepare disposable current-user startup fixture parent
+        shell: pwsh
+        run: New-Item -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Force | Out-Null
+      - name: Full Windows promotion gate
+        shell: pwsh
+        run: |
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE -ne 0) { throw 'Formatting check failed' }
+          cargo test --locked --all-targets -- --nocapture
+          if ($LASTEXITCODE -ne 0) { throw 'Native/deterministic tests failed' }
+          cargo test --locked --test windows_contract -- --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { throw 'Disposable force fixture failed' }
+          cargo clippy --locked --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Clippy failed' }
+          cargo build --locked --release --bin process-optimizer
+          if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }
+          ./scripts/check-portable.ps1
+      - name: Standard-user worker lifecycle fixtures
+        shell: pwsh
+        run: ./scripts/ci-normal-user.ps1
+      - name: Native UI smoke and read-only GPU probe
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force review | Out-Null
+          $exe = (Resolve-Path target/release/process-optimizer.exe).Path
+          foreach ($mode in @('--ui-smoke','--advanced-smoke')) {
+            $p = Start-Process -FilePath $exe -ArgumentList $mode -PassThru
+            if (-not $p.WaitForExit(30000)) { $p.Kill(); throw "Our $mode timed out" }
+            if ($p.ExitCode -ne 0) { throw "Native $mode failed" }
+          }
+          $probe = Join-Path $pwd 'review/ci.probe.json'
+          $p = Start-Process -FilePath $exe -ArgumentList @('--probe',$probe) -PassThru
+          if (-not $p.WaitForExit(30000)) { $p.Kill(); throw 'Read-only GPU probe timed out' }
+          if ($p.ExitCode -ne 0) { throw 'Read-only GPU probe failed' }
+          Remove-Item $probe
+      - name: Promote only verified product files onto current main
+        shell: pwsh
+        env:
+          V04_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          $source = '${{ github.sha }}'
+          Copy-Item scripts/promote_v04_docs.py "$env:RUNNER_TEMP/promote_v04_docs.py"
+          git fetch origin main
+          git switch --detach origin/main
+          git checkout $source -- Cargo.toml Cargo.lock src tests .github/workflows/ci.yml
+          python "$env:RUNNER_TEMP/promote_v04_docs.py"
+          if ($LASTEXITCODE -ne 0) { throw 'Documentation sync failed' }
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE -ne 0) { throw 'Promoted source formatting drifted' }
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.toml Cargo.lock README.md specs src tests .github/workflows/ci.yml
+          $bad = git diff --cached --name-only | Where-Object { ($_ -like '.github/workflows/*' -and $_ -ne '.github/workflows/ci.yml') -or $_ -like 'scripts/v04-*' -or $_ -like 'scripts/*cleanup*v04*' -or $_ -eq 'V04_VERIFIED.txt' }
+          if ($bad) { throw "Temporary validation files would leak into main: $($bad -join ', ')" }
+          git commit -m 'feat: add permanent startup cleanup and copyable process diagnostics'
+          if ($LASTEXITCODE -ne 0) { throw 'Promotion commit failed' }
+          git push origin HEAD:refs/heads/main
+          if ($LASTEXITCODE -ne 0) { throw 'Main advanced or promotion push failed' }
+          git rev-parse HEAD

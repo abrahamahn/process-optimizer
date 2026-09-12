@@ -100,16 +100,7 @@ fn get_https(url: &str, max_bytes: usize) -> AppResult<Vec<u8>> {
             ));
         }
         let header_len = (headers.len().saturating_sub(1)) as u32;
-        if WinHttpSendRequest(
-            request.0,
-            headers.as_ptr(),
-            header_len,
-            null(),
-            0,
-            0,
-            0,
-        ) == 0
-        {
+        if WinHttpSendRequest(request.0, headers.as_ptr(), header_len, null(), 0, 0, 0) == 0 {
             return Err(format!(
                 "Could not send update request: {}",
                 std::io::Error::last_os_error()
@@ -183,11 +174,15 @@ fn prepare(manifest: &contract::Manifest) -> AppResult<(PathBuf, PathBuf)> {
     manifest.validate()?;
     let dir = update_dir()?;
     let app = dir.join(format!("process-optimizer-{}.exe", manifest.version));
-    let updater = dir.join(format!("process-optimizer-updater-{}.exe", manifest.version));
+    let updater = dir.join(format!(
+        "process-optimizer-updater-{}.exe",
+        manifest.version
+    ));
     let _ = std::fs::remove_file(&app);
     let _ = std::fs::remove_file(&updater);
     download_verified(&manifest.app_url, &manifest.app_sha256, &app)?;
-    if let Err(error) = download_verified(&manifest.updater_url, &manifest.updater_sha256, &updater) {
+    if let Err(error) = download_verified(&manifest.updater_url, &manifest.updater_sha256, &updater)
+    {
         let _ = std::fs::remove_file(&app);
         return Err(error);
     }
@@ -250,7 +245,9 @@ fn info(window: HWND, text: &str) {
 /// Returns true only after a verified updater process has been launched and the UI should exit.
 pub fn interactive(window: HWND) -> AppResult<bool> {
     if runner::database()?.active()?.is_some() {
-        return Err("Turn Game Mode OFF and finish recovery before updating Process Optimizer.".into());
+        return Err(
+            "Turn Game Mode OFF and finish recovery before updating Process Optimizer.".into(),
+        );
     }
     let Some(manifest) = check_latest()? else {
         info(

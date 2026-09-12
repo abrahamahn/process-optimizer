@@ -1,0 +1,67 @@
+name: Bootstrap reviewed v0.4 source
+on:
+  push:
+    branches: [codex/cleanup-ui-v04]
+    paths: [.github/workflows/bootstrap-v04-reviewed.yml]
+permissions:
+  contents: write
+jobs:
+  bootstrap:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Download prior reviewed source artifact directly from GitHub API
+        shell: pwsh
+        run: |
+          $headers = @{
+            Authorization = "Bearer $env:GITHUB_TOKEN"
+            Accept = "application/vnd.github+json"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+          Invoke-WebRequest -Uri "https://api.github.com/repos/abrahamahn/process-optimizer/actions/artifacts/10112844022/zip" -Headers $headers -OutFile bootstrap.zip
+          Expand-Archive bootstrap.zip bootstrap -Force
+          $nested = Get-ChildItem bootstrap -Recurse -Filter 'v04-source.zip' | Select-Object -First 1
+          if (-not $nested) { throw 'Nested reviewed source archive missing' }
+          Expand-Archive $nested.FullName reviewed -Force
+          foreach ($dir in @('src','tests')) {
+            if (-not (Test-Path (Join-Path reviewed $dir))) { throw "Missing reviewed $dir" }
+            Remove-Item $dir -Recurse -Force
+            Copy-Item (Join-Path reviewed $dir) $dir -Recurse
+          }
+          Copy-Item reviewed/Cargo.toml Cargo.toml -Force
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy
+      - name: Resolve, format, and test
+        shell: pwsh
+        run: |
+          cargo generate-lockfile
+          if ($LASTEXITCODE -ne 0) { throw 'Lockfile failed' }
+          cargo fmt --all
+          if ($LASTEXITCODE -ne 0) { throw 'Format failed' }
+          cargo test --locked --all-targets -- --nocapture
+          if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
+          cargo clippy --locked --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Clippy failed' }
+          cargo build --locked --release --bin process-optimizer
+          if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }
+          ./scripts/check-portable.ps1
+      - name: Run standard-user lifecycle fixtures
+        shell: pwsh
+        run: ./scripts/ci-normal-user.ps1
+      - name: Commit reviewed implementation only
+        shell: pwsh
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.toml Cargo.lock src tests
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 1) {
+            git commit -m 'feat: implement two-mode cleanup and copyable process diagnostics'
+            if ($LASTEXITCODE -ne 0) { throw 'Commit failed' }
+            git push origin HEAD:refs/heads/codex/cleanup-ui-v04
+            if ($LASTEXITCODE -ne 0) { throw 'Push failed' }
+          }
+          git rev-parse HEAD

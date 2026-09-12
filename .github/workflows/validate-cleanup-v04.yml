@@ -1,0 +1,105 @@
+name: Validate v0.4 reviewed source
+on:
+  push:
+    branches: [codex/cleanup-ui-v04]
+    paths:
+      - .github/workflows/validate-cleanup-v04.yml
+permissions:
+  contents: write
+concurrency:
+  group: cleanup-v04-reviewed
+  cancel-in-progress: true
+jobs:
+  validate:
+    if: github.repository == 'abrahamahn/process-optimizer' && github.ref == 'refs/heads/codex/cleanup-ui-v04'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 1
+      - name: Download the previously captured reviewed source artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: cleanup-v04-review
+          path: bootstrap
+          github-token: ${{ github.token }}
+          repository: abrahamahn/process-optimizer
+          run-id: 34373402528
+      - name: Restore only reviewed implementation files from the artifact
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem bootstrap -Recurse -Filter 'v04-source.zip' | Select-Object -First 1
+          if (-not $zip) { throw 'Reviewed source archive not found in prior artifact' }
+          Expand-Archive -Path $zip.FullName -DestinationPath bootstrap/source -Force
+          foreach ($path in @('src','tests')) {
+            if (-not (Test-Path (Join-Path bootstrap/source $path))) { throw "Missing reviewed $path" }
+            Remove-Item $path -Recurse -Force
+            Copy-Item (Join-Path bootstrap/source $path) $path -Recurse
+          }
+          Copy-Item bootstrap/source/Cargo.toml Cargo.toml -Force
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy
+      - name: Resolve lockfile and format
+        shell: pwsh
+        run: |
+          cargo generate-lockfile
+          if ($LASTEXITCODE -ne 0) { throw 'Lockfile generation failed' }
+          cargo fmt --all
+          if ($LASTEXITCODE -ne 0) { throw 'Formatting failed' }
+      - name: Native and deterministic tests
+        run: cargo test --locked --all-targets -- --nocapture
+      - name: Explicit fixture-only force path
+        run: cargo test --locked --test windows_contract -- --ignored --nocapture
+      - name: Standard-user lifecycle fixtures
+        shell: pwsh
+        run: ./scripts/ci-normal-user.ps1
+      - name: Warning-free static checks
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Release build and portable dependency check
+        shell: pwsh
+        run: |
+          cargo build --locked --release --bin process-optimizer
+          if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }
+          ./scripts/check-portable.ps1
+      - name: Native UI smoke and read-only GPU probe
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force review | Out-Null
+          $exe = (Resolve-Path target/release/process-optimizer.exe).Path
+          foreach ($mode in @('--ui-smoke','--advanced-smoke')) {
+            $p = Start-Process -FilePath $exe -ArgumentList $mode -PassThru
+            if (-not $p.WaitForExit(30000)) { $p.Kill(); throw "Our $mode timed out" }
+            if ($p.ExitCode -ne 0) { throw "Native $mode failed" }
+          }
+          $probe = Join-Path $pwd 'review/ci.probe.json'
+          $p = Start-Process -FilePath $exe -ArgumentList @('--probe',$probe) -PassThru
+          if (-not $p.WaitForExit(30000)) { $p.Kill(); throw 'Read-only GPU probe timed out' }
+          if ($p.ExitCode -ne 0) { throw 'Read-only GPU probe failed' }
+          Remove-Item $probe
+      - name: Commit verified implementation to validation branch
+        shell: pwsh
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.toml Cargo.lock src tests
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 1) {
+            git commit -m 'feat: add copyable diagnostics and reversible startup cleanup'
+            if ($LASTEXITCODE -ne 0) { throw 'Verified-source commit failed' }
+            git push origin HEAD:refs/heads/codex/cleanup-ui-v04
+            if ($LASTEXITCODE -ne 0) { throw 'Branch advanced; refusing overwrite' }
+          } elseif ($LASTEXITCODE -ne 0) { throw 'Cannot inspect staged changes' }
+          git rev-parse HEAD
+      - name: Archive verified source
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force review | Out-Null
+          Compress-Archive -Path src,tests,Cargo.toml,Cargo.lock -DestinationPath review/v04-verified-source.zip -Force
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: cleanup-v04-verified-source
+          path: review/v04-verified-source.zip
+          retention-days: 7

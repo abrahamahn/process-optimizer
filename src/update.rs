@@ -31,7 +31,11 @@ fn version_parts(value: &str) -> AppResult<[u64; 3]> {
         part.parse::<u64>()
             .map_err(|_| "Version field is too large.".into())
     };
-    let result = [parse(parts.next())?, parse(parts.next())?, parse(parts.next())?];
+    let result = [
+        parse(parts.next())?,
+        parse(parts.next())?,
+        parse(parts.next())?,
+    ];
     if parts.next().is_some() {
         return Err("Only stable major.minor.patch releases are supported.".into());
     }
@@ -61,7 +65,9 @@ impl Manifest {
             || self.updater_url != format!("{base}process-optimizer-updater.exe")
             || self.installer_url != format!("{base}ProcessOptimizerSetup.exe")
         {
-            return Err("Update manifest points outside the expected GitHub release assets.".into());
+            return Err(
+                "Update manifest points outside the expected GitHub release assets.".into(),
+            );
         }
         Ok(())
     }
@@ -104,9 +110,7 @@ mod tests {
     use super::*;
 
     fn manifest(version: &str) -> Manifest {
-        let base = format!(
-            "https://github.com/{REPOSITORY}/releases/download/v{version}/"
-        );
+        let base = format!("https://github.com/{REPOSITORY}/releases/download/v{version}/");
         Manifest {
             schema: MANIFEST_SCHEMA,
             version: version.into(),
