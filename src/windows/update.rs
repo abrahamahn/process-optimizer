@@ -1,4 +1,4 @@
-use super::{runner, wide};
+use super::{runner, ui_common, wide};
 use crate::{model::AppResult, update as contract};
 use std::{
     ffi::c_void,
@@ -7,13 +7,7 @@ use std::{
     process::Command,
     ptr::{null, null_mut},
 };
-use windows_sys::Win32::{
-    Foundation::HWND,
-    Networking::WinHttp::*,
-    UI::WindowsAndMessaging::{
-        MessageBoxW, IDYES, MB_DEFBUTTON2, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_YESNO,
-    },
-};
+use windows_sys::Win32::{Foundation::HWND, Networking::WinHttp::*};
 
 const MAX_DOWNLOAD_BYTES: usize = 64 * 1024 * 1024;
 
@@ -221,25 +215,11 @@ fn launch_updater(
 }
 
 fn confirm(window: HWND, text: &str) -> bool {
-    unsafe {
-        MessageBoxW(
-            window,
-            wide(text).as_ptr(),
-            wide("Process Optimizer update").as_ptr(),
-            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2,
-        ) == IDYES
-    }
+    ui_common::confirm_dialog(window, "Process Optimizer update", text)
 }
 
 fn info(window: HWND, text: &str) {
-    unsafe {
-        MessageBoxW(
-            window,
-            wide(text).as_ptr(),
-            wide("Process Optimizer update").as_ptr(),
-            MB_OK | MB_ICONINFORMATION,
-        );
-    }
+    ui_common::info_dialog(window, "Process Optimizer update", text);
 }
 
 /// Returns true only after a verified updater process has been launched and the UI should exit.

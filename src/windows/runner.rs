@@ -1,4 +1,7 @@
-use super::process::{self, SessionLock, WindowsBackend};
+use super::{
+    backend::WindowsBackend,
+    process::{self, SessionLock},
+};
 use crate::{
     engine,
     journal::{Database, Journal},

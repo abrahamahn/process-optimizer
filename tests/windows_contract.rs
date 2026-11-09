@@ -3,7 +3,7 @@ use process_optimizer::{
     engine::{self, Backend},
     journal::{Database, Journal},
     model::*,
-    windows::process::{self, WindowsBackend},
+    windows::{backend::WindowsBackend, process},
 };
 use std::os::windows::process::CommandExt;
 use std::{

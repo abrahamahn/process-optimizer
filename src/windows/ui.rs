@@ -1,4 +1,4 @@
-use super::{gpu, process, runner, wide};
+use super::{gpu, process, runner, ui_common, wide};
 use crate::{
     gpu::{busiest_engine, dedicated_allocations},
     journal::Journal,
@@ -48,8 +48,6 @@ const REPORT: u16 = 52;
 const ACK: u16 = 53;
 const SAVE: u16 = 54;
 const STATUS: u16 = 60;
-const BM_GETCHECK_MSG: u32 = 0x00F0;
-const BM_SETCHECK_MSG: u32 = 0x00F1;
 
 type SampleSlot = Arc<Mutex<Option<AppResult<Snapshot>>>>;
 struct State {
@@ -116,47 +114,16 @@ impl State {
         }
     }
     fn checked(&self, id: u16) -> bool {
-        unsafe { SendMessageW(self.h(id), BM_GETCHECK_MSG, 0, 0) == 1 }
+        ui_common::get_check(self.h(id))
     }
     fn set_check(&self, id: u16, value: bool) {
-        unsafe {
-            SendMessageW(self.h(id), BM_SETCHECK_MSG, usize::from(value), 0);
-        }
+        ui_common::set_check(self.h(id), value);
     }
     fn edit_text(&self, id: u16) -> String {
-        let length = unsafe { GetWindowTextLengthW(self.h(id)) }.clamp(0, 32767) as usize;
-        let mut value = vec![0u16; length + 1];
-        let n = unsafe { GetWindowTextW(self.h(id), value.as_mut_ptr(), value.len() as i32) }.max(0)
-            as usize;
-        String::from_utf16_lossy(&value[..n])
+        ui_common::get_window_text(self.h(id))
     }
     fn widget(&mut self, id: u16, class: &str, label: &str, style: u32) -> AppResult<()> {
-        let h = unsafe {
-            CreateWindowExW(
-                if class == "EDIT" || class == "LISTBOX" {
-                    WS_EX_CLIENTEDGE
-                } else {
-                    0
-                },
-                wide(class).as_ptr(),
-                wide(label).as_ptr(),
-                WS_CHILD | WS_VISIBLE | style,
-                0,
-                0,
-                10,
-                10,
-                self.window,
-                id as usize as HMENU,
-                GetModuleHandleW(null()),
-                null(),
-            )
-        };
-        if h.is_null() {
-            return Err(format!(
-                "Could not create native control {id}: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
+        let h = ui_common::create_control(self.window, id, class, label, style)?;
         self.widgets.insert(id, h);
         Ok(())
     }
@@ -262,44 +229,9 @@ impl State {
     }
     fn update_fonts(&mut self) {
         let dpi = unsafe { GetDpiForWindow(self.window) }.max(96);
-        let height = -(((15 * dpi) / 96) as i32);
         let (old, old_mono) = (self.font, self.mono_font);
-        self.font = unsafe {
-            CreateFontW(
-                height,
-                0,
-                0,
-                0,
-                400,
-                0,
-                0,
-                0,
-                1,
-                0,
-                0,
-                0,
-                0,
-                wide("Segoe UI").as_ptr(),
-            )
-        };
-        self.mono_font = unsafe {
-            CreateFontW(
-                height,
-                0,
-                0,
-                0,
-                400,
-                0,
-                0,
-                0,
-                1,
-                0,
-                0,
-                0,
-                0,
-                wide("Consolas").as_ptr(),
-            )
-        };
+        self.font = ui_common::create_dpi_font("Segoe UI", 15, 400, dpi);
+        self.mono_font = ui_common::create_dpi_font("Consolas", 15, 400, dpi);
         for (id, h) in &self.widgets {
             unsafe {
                 SendMessageW(
@@ -996,24 +928,10 @@ impl State {
 }
 
 fn confirm(owner: HWND, message: &str) -> bool {
-    unsafe {
-        MessageBoxW(
-            owner,
-            wide(message).as_ptr(),
-            wide("Process Optimizer — explicit approval").as_ptr(),
-            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2,
-        ) == IDYES
-    }
+    ui_common::confirm_dialog(owner, "Process Optimizer — explicit approval", message)
 }
 pub fn error(message: &str) {
-    unsafe {
-        MessageBoxW(
-            null_mut(),
-            wide(message).as_ptr(),
-            wide("Process Optimizer").as_ptr(),
-            MB_OK | MB_ICONWARNING,
-        );
-    }
+    ui_common::warning_dialog(null_mut(), "Process Optimizer", message);
 }
 
 unsafe extern "system" fn window_proc(window: HWND, message: u32, w: WPARAM, l: LPARAM) -> LRESULT {
@@ -1141,22 +1059,8 @@ fn run_inner(smoke: bool) -> AppResult<()> {
         }
         ShowWindow(window, SW_SHOW);
         UpdateWindow(window);
-        let mut message: MSG = zeroed();
-        loop {
-            let status = GetMessageW(&mut message, null_mut(), 0, 0);
-            if status == -1 {
-                return Err(std::io::Error::last_os_error().to_string());
-            }
-            if status == 0 {
-                break;
-            }
-            if IsDialogMessageW(window, &message) == 0 {
-                TranslateMessage(&message);
-                DispatchMessageW(&message);
-            }
-        }
+        ui_common::run_dialog_message_loop(window)
     }
-    Ok(())
 }
 pub fn run() -> AppResult<()> {
     if process::is_elevated().map_err(|e| e.message)? {

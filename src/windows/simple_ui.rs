@@ -1,7 +1,12 @@
 //! Small native front door: On/Off first, app permissions behind Settings.
-use super::{gpu, manual as native, process, runner, startup, update, wide};
+use super::{
+    gpu, manual as native, process, runner,
+    simple_recommendations::{
+        build_choices, format_choice_detail, format_choice_row, format_process_report, Choice,
+    },
+    startup, ui_common, update, wide,
+};
 use crate::{
-    gpu::{busiest_engine, dedicated_allocations},
     manual::{self, Config, RuleAction},
     model::*,
     policy,
@@ -72,6 +77,7 @@ const ES_MULTILINE_STYLE: u32 = 0x0004;
 const ES_AUTOVSCROLL_STYLE: u32 = 0x0040;
 const ES_AUTOHSCROLL_STYLE: u32 = 0x0080;
 const ES_READONLY_STYLE: u32 = 0x0800;
+
 #[repr(C)]
 struct AppDrawItem {
     _ctl_type: u32,
@@ -86,171 +92,6 @@ struct AppDrawItem {
 }
 type Slot<T> = Arc<Mutex<Option<AppResult<T>>>>;
 
-fn describe(name: &str) -> (&'static str, &'static str) {
-    let n = name.to_ascii_lowercase();
-    if matches!(
-        n.as_str(),
-        "chrome.exe" | "msedge.exe" | "firefox.exe" | "brave.exe"
-    ) {
-        ("Web browser", "Usually a Game Mode-only choice")
-    } else if n.contains("nvidia overlay")
-        || matches!(
-            n.as_str(),
-            "rtss.exe" | "rtsshooksloader64.exe" | "msiafterburner.exe" | "radeonsoftware.exe"
-        )
-    {
-        (
-            "Overlay / monitoring",
-            "Close for gaming only if you do not use its overlay or capture",
-        )
-    } else if matches!(
-        n.as_str(),
-        "windowsterminal.exe" | "powershell.exe" | "cncmd.exe" | "code.exe"
-    ) {
-        ("Developer tool", "Usually a Game Mode-only choice")
-    } else if matches!(
-        n.as_str(),
-        "applephotostreams.exe" | "apsdaemon.exe" | "mdnsresponder.exe"
-    ) {
-        (
-            "Apple sync / discovery",
-            "Permanent startup cleanup can make sense if unused",
-        )
-    } else if n.contains("apogee") || n.contains("antelopeaudio") {
-        (
-            "Audio hardware software",
-            "Keep if you use that audio device",
-        )
-    } else if n.starts_with("asus") {
-        (
-            "ASUS utility",
-            "Review carefully; device hotkeys or power features may depend on it",
-        )
-    } else if n.contains("nvbroadcast") {
-        (
-            "NVIDIA Broadcast",
-            "Keep if you use microphone or camera effects",
-        )
-    } else if n == "everything.exe" {
-        (
-            "File search utility",
-            "Game Mode or startup cleanup if you do not need it",
-        )
-    } else if n == "msedgewebview2.exe" {
-        (
-            "App web component",
-            "Keep unless you understand which parent app owns it",
-        )
-    } else if n == "postgres.exe" || n == "pg_ctl.exe" {
-        (
-            "Developer database",
-            "Use a proper database stop; do not force-close it",
-        )
-    } else {
-        ("Optional app", "Review before changing")
-    }
-}
-
-fn essential_process(name: &str, reason: Option<&str>) -> bool {
-    let n = name.to_ascii_lowercase();
-    if matches!(
-        n.as_str(),
-        "system"
-            | "registry"
-            | "secure system"
-            | "memory compression"
-            | "smss.exe"
-            | "csrss.exe"
-            | "wininit.exe"
-            | "services.exe"
-            | "lsass.exe"
-            | "winlogon.exe"
-            | "svchost.exe"
-            | "dwm.exe"
-            | "audiodg.exe"
-            | "fontdrvhost.exe"
-            | "sihost.exe"
-            | "ctfmon.exe"
-            | "msmpeng.exe"
-            | "mssense.exe"
-            | "securityhealthservice.exe"
-    ) {
-        return true;
-    }
-    reason.is_some_and(|r| {
-        let r = r.to_ascii_lowercase();
-        r.contains("critical windows process") || r.contains("windows component: protected")
-    })
-}
-
-fn recommendation(c: &Choice) -> &'static str {
-    if c.essential {
-        return "KEEP — REQUIRED";
-    }
-    if c.protected {
-        return "KEEP — PROTECTED";
-    }
-    let n = c.name.to_ascii_lowercase();
-    if n.contains("apogee")
-        || n.contains("antelopeaudio")
-        || n.starts_with("asus")
-        || n.contains("nvbroadcast")
-        || n == "msedgewebview2.exe"
-        || n == "postgres.exe"
-        || n == "pg_ctl.exe"
-    {
-        return "KEEP / REVIEW";
-    }
-    if c.startup_enabled
-        && (matches!(
-            n.as_str(),
-            "applephotostreams.exe"
-                | "apsdaemon.exe"
-                | "mdnsresponder.exe"
-                | "everything.exe"
-                | "onedrive.exe"
-                | "dropbox.exe"
-                | "googledrivefs.exe"
-        ) || n.contains("updater"))
-    {
-        return "DISABLE STARTUP IF UNUSED";
-    }
-    if matches!(
-        n.as_str(),
-        "chrome.exe"
-            | "msedge.exe"
-            | "firefox.exe"
-            | "brave.exe"
-            | "windowsterminal.exe"
-            | "powershell.exe"
-            | "cncmd.exe"
-            | "code.exe"
-            | "rtss.exe"
-            | "rtsshooksloader64.exe"
-            | "msiafterburner.exe"
-            | "radeonsoftware.exe"
-            | "everything.exe"
-            | "onedrive.exe"
-            | "dropbox.exe"
-            | "googledrivefs.exe"
-    ) || n.contains("nvidia overlay")
-        || c.gpu.is_some_and(|v| v >= 1.0)
-    {
-        return "LOWER PRIORITY";
-    }
-    "KEEP / REVIEW"
-}
-
-struct Choice {
-    path: String,
-    name: String,
-    id: Option<Identity>,
-    protected: bool,
-    essential: bool,
-    gpu: Option<f64>,
-    startup_enabled: bool,
-    startup_disabled: bool,
-}
 struct State {
     window: HWND,
     widgets: BTreeMap<u16, HWND>,
@@ -312,15 +153,7 @@ impl State {
         self.widgets.get(&id).copied().unwrap_or(null_mut())
     }
     fn text(&self, id: u16, text: &str) {
-        // Avoid repainting unchanged status text on every poll.
-        unsafe {
-            let n = GetWindowTextLengthW(self.h(id)).max(0) as usize;
-            let mut old = vec![0u16; n + 1];
-            GetWindowTextW(self.h(id), old.as_mut_ptr(), old.len() as i32);
-            if String::from_utf16_lossy(&old[..n]) != text {
-                SetWindowTextW(self.h(id), wide(text).as_ptr());
-            }
-        }
+        ui_common::set_window_text_if_changed(self.h(id), text);
     }
     fn enable(&self, id: u16, value: bool) {
         unsafe {
@@ -331,14 +164,7 @@ impl State {
         }
     }
     fn check(&self, id: u16, checked: bool) {
-        unsafe {
-            SendMessageW(
-                self.h(id),
-                BM_SETCHECK,
-                if checked { 1usize } else { 0usize },
-                0,
-            );
-        }
+        ui_common::set_check(self.h(id), checked);
     }
     fn selected_index(&self) -> Option<usize> {
         let i = unsafe { SendMessageW(self.h(APPS), LB_GETCURSEL, 0, 0) };
@@ -397,45 +223,7 @@ impl State {
             RESTORE_STARTUP,
             idle && (c.startup_enabled || c.startup_disabled),
         );
-
-        let game = match rule.map(|r| &r.action) {
-            Some(RuleAction::Close) => "Close",
-            Some(RuleAction::ReduceLoad) => "Lower priority",
-            None => "Keep",
-        };
-        let startup = if c.startup_disabled {
-            "Disabled"
-        } else if c.startup_enabled {
-            "Keep / starts with Windows"
-        } else {
-            "No supported startup entry"
-        };
-        let (category, guidance) = if c.essential {
-            ("Windows / core", "Required; do not change")
-        } else if c.protected {
-            ("Protected app", "Kept outside optimizer actions")
-        } else {
-            describe(&c.name)
-        };
-        let safety = if c.essential {
-            "ESSENTIAL — KEEP. This Windows/core process is never an optimization target."
-        } else if c.protected {
-            "PROTECTED — KEEP. Process Optimizer will not change this app."
-        } else {
-            "Optional app."
-        };
-        self.text(
-            DETAIL,
-            &format!(
-                "{} {}: {}. Current: Game Mode = {}; Startup = {}. Recommended: {}. Turn OFF restores priority changes already applied.",
-                safety,
-                category,
-                guidance,
-                game,
-                startup,
-                recommendation(c)
-            ),
-        );
+        self.text(DETAIL, &format_choice_detail(c, rule));
     }
     fn draw_app_item(&self, item: &AppDrawItem) -> bool {
         if item.ctl_id != APPS as u32 || item.item_id == u32::MAX {
@@ -491,32 +279,7 @@ impl State {
         true
     }
     fn control(&mut self, id: u16, class: &str, label: &str, style: u32) -> AppResult<()> {
-        let h = unsafe {
-            CreateWindowExW(
-                if class == "LISTBOX" || class == "EDIT" {
-                    WS_EX_CLIENTEDGE
-                } else {
-                    0
-                },
-                wide(class).as_ptr(),
-                wide(label).as_ptr(),
-                WS_CHILD | WS_VISIBLE | style,
-                0,
-                0,
-                10,
-                10,
-                self.window,
-                id as usize as HMENU,
-                GetModuleHandleW(null()),
-                null(),
-            )
-        };
-        if h.is_null() {
-            return Err(format!(
-                "Could not create control {id}: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
+        let h = ui_common::create_control(self.window, id, class, label, style)?;
         self.widgets.insert(id, h);
         Ok(())
     }
@@ -634,27 +397,9 @@ impl State {
     }
     fn fonts(&mut self) {
         let dpi = unsafe { GetDpiForWindow(self.window) }.max(96);
-        let create = |size: u32, weight: i32| unsafe {
-            CreateFontW(
-                -((size * dpi / 96) as i32),
-                0,
-                0,
-                0,
-                weight,
-                0,
-                0,
-                0,
-                1,
-                0,
-                0,
-                0,
-                0,
-                wide("Segoe UI").as_ptr(),
-            )
-        };
         let (old, old_heading) = (self.font, self.heading);
-        self.font = create(15, 400);
-        self.heading = create(28, 600);
+        self.font = ui_common::create_dpi_font("Segoe UI", 15, 400, dpi);
+        self.heading = ui_common::create_dpi_font("Segoe UI", 28, 600, dpi);
         for (id, h) in &self.widgets {
             unsafe {
                 SendMessageW(
@@ -837,142 +582,14 @@ impl State {
             .and_then(|i| self.choices.get(i))
             .map(|c| c.path.clone());
         let startup_entries = startup::entries().unwrap_or_default();
-        let mut choices = BTreeMap::new();
-        for row in &self.snapshot.processes {
-            let complete = policy::complete_identity(&row.identity);
-            let essential = essential_process(&row.name, row.protected_reason.as_deref());
-            if !complete && !essential {
-                continue;
-            }
-            let path = if complete {
-                policy::normalized_path(&row.identity.path)
-            } else {
-                format!(
-                    "protected://{}:{}",
-                    row.name.to_ascii_lowercase(),
-                    row.identity.pid
-                )
-            };
-            let entry = choices.entry(path.clone()).or_insert_with(|| Choice {
-                path,
-                name: row.name.clone(),
-                id: if complete {
-                    Some(row.identity.clone())
-                } else {
-                    None
-                },
-                protected: false,
-                essential,
-                gpu: None,
-                startup_enabled: false,
-                startup_disabled: false,
-            });
-            entry.protected |= row.protected_reason.is_some() || essential;
-            entry.essential |= essential;
-            if let Some(v) = busiest_engine(&row.gpu) {
-                entry.gpu = Some(entry.gpu.unwrap_or(0.0).max(v));
-            }
-        }
-        for rule in &self.config.rules {
-            choices
-                .entry(rule.app.path.clone())
-                .or_insert_with(|| Choice {
-                    path: rule.app.path.clone(),
-                    name: rule.app.path.rsplit('\\').next().unwrap_or("App").into(),
-                    id: None,
-                    protected: false,
-                    essential: false,
-                    gpu: None,
-                    startup_enabled: false,
-                    startup_disabled: false,
-                });
-        }
-        for backup in &self.config.startup_disabled {
-            choices
-                .entry(backup.app.path.clone())
-                .or_insert_with(|| Choice {
-                    path: backup.app.path.clone(),
-                    name: backup.app.path.rsplit('\\').next().unwrap_or("App").into(),
-                    id: None,
-                    protected: false,
-                    essential: false,
-                    gpu: None,
-                    startup_enabled: false,
-                    startup_disabled: true,
-                });
-        }
-        for c in choices.values_mut() {
-            c.startup_enabled = startup_entries
-                .iter()
-                .any(|e| e.executable.as_deref() == Some(c.path.as_str()));
-            c.startup_disabled = self
-                .config
-                .startup_disabled
-                .iter()
-                .any(|b| b.app.path == c.path);
-        }
-        self.choices = choices.into_values().collect();
-        self.choices.sort_by_key(|c| {
-            (
-                (c.protected || c.essential),
-                c.essential,
-                c.name.to_lowercase(),
-            )
-        });
+        self.choices = build_choices(&self.snapshot.processes, &self.config, &startup_entries);
         unsafe {
             SendMessageW(self.h(APPS), WM_SETREDRAW, 0, 0);
             SendMessageW(self.h(APPS), LB_RESETCONTENT, 0, 0);
         }
+        let now = native::now();
         for c in &self.choices {
-            let game = self
-                .config
-                .rules
-                .iter()
-                .find(|r| r.app.path == c.path)
-                .map(|r| {
-                    if !r.active(native::now()) {
-                        "Keep (approval expired)"
-                    } else {
-                        match r.action {
-                            RuleAction::Close => "Close",
-                            RuleAction::ReduceLoad => "Lower priority",
-                        }
-                    }
-                })
-                .unwrap_or("Keep");
-            let category = if c.essential {
-                "Windows / core"
-            } else if c.protected {
-                "Protected app"
-            } else {
-                describe(&c.name).0
-            };
-            let value = c.gpu.map(|v| format!(" | GPU {v:.1}%")).unwrap_or_default();
-            let startup = if c.startup_disabled {
-                "Disabled"
-            } else if c.startup_enabled {
-                "Keep"
-            } else {
-                "N/A"
-            };
-            let safety = if c.essential {
-                "ESSENTIAL — KEEP"
-            } else if c.protected {
-                "PROTECTED — KEEP"
-            } else {
-                "OPTIONAL"
-            };
-            let line = format!(
-                "{} | {} — {} | Game: {} | Startup: {} | RECOMMENDED: {}{}{}",
-                safety,
-                c.name,
-                category,
-                game,
-                startup,
-                recommendation(c),
-                if c.id.is_none() { " | Not running" } else { "" },
-                value
-            );
+            let line = format_choice_row(c, &self.config, now);
             unsafe {
                 SendMessageW(
                     self.h(APPS),
@@ -1183,29 +800,6 @@ impl State {
         Ok(())
     }
 
-    fn process_report(&self) -> String {
-        let mut rows: Vec<_> = self.snapshot.processes.iter().collect();
-        rows.sort_by_key(|r| (r.name.to_ascii_lowercase(), r.identity.pid));
-        let mut text = String::from("Process Optimizer — copyable process report\r\nNo executable paths, command lines, documents, or account IDs are included.\r\n\r\nPID\tApplication\tGPU peak\tDedicated MiB\tStatus\r\n");
-        for row in rows {
-            let gpu = busiest_engine(&row.gpu)
-                .map(|v| format!("{v:.1}%"))
-                .unwrap_or_else(|| "-".into());
-            let mem = dedicated_allocations(&row.gpu)
-                .map(|b| format!("{:.1}", b as f64 / 1024.0 / 1024.0))
-                .unwrap_or_else(|| "-".into());
-            let status = row
-                .protected_reason
-                .as_deref()
-                .unwrap_or("Optional / not approved");
-            text.push_str(&format!(
-                "{}\t{}\t{}\t{}\t{}\r\n",
-                row.identity.pid, row.name, gpu, mem, status
-            ));
-        }
-        text
-    }
-
     fn copy_toggle(&mut self) -> AppResult<()> {
         if self.copy_mode {
             self.copy_mode = false;
@@ -1216,7 +810,7 @@ impl State {
         if self.snapshot.processes.is_empty() {
             return Err("Refresh apps first, then open the copyable process list.".into());
         }
-        self.text(COPY_TEXT, &self.process_report());
+        self.text(COPY_TEXT, &format_process_report(&self.snapshot.processes));
         self.text(INTRO, "COPY PROCESS LIST\r\nDrag to select text, or press Ctrl+A then Ctrl+C. Paste it directly into ChatGPT.");
         self.copy_mode = true;
         self.visibility();
@@ -1442,24 +1036,10 @@ impl State {
     }
 }
 fn confirm(window: HWND, text: &str) -> bool {
-    unsafe {
-        MessageBoxW(
-            window,
-            wide(text).as_ptr(),
-            wide("Game Mode permission").as_ptr(),
-            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2,
-        ) == IDYES
-    }
+    ui_common::confirm_dialog(window, "Game Mode permission", text)
 }
 fn info(window: HWND, text: &str) {
-    unsafe {
-        MessageBoxW(
-            window,
-            wide(text).as_ptr(),
-            wide("Process Optimizer").as_ptr(),
-            MB_OK | MB_ICONINFORMATION,
-        );
-    }
+    ui_common::info_dialog(window, "Process Optimizer", text);
 }
 
 unsafe extern "system" fn proc(window: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
@@ -1628,22 +1208,8 @@ fn run_inner(smoke: bool, preview: bool) -> AppResult<()> {
         if preview {
             SetTimer(window, 2, 7000, None);
         }
-        let mut message: MSG = zeroed();
-        loop {
-            let result = GetMessageW(&mut message, null_mut(), 0, 0);
-            if result < 0 {
-                return Err(std::io::Error::last_os_error().to_string());
-            }
-            if result == 0 {
-                break;
-            }
-            if IsDialogMessageW(window, &message) == 0 {
-                TranslateMessage(&message);
-                DispatchMessageW(&message);
-            }
-        }
+        ui_common::run_dialog_message_loop(window)
     }
-    Ok(())
 }
 pub fn run() -> AppResult<()> {
     if process::is_elevated().map_err(|e| e.message)? {
@@ -1657,60 +1223,4 @@ pub fn smoke() -> AppResult<()> {
 
 pub fn preview() -> AppResult<()> {
     run_inner(true, true)
-}
-
-#[cfg(test)]
-mod recommendation_tests {
-    use super::*;
-
-    fn choice(
-        name: &str,
-        protected: bool,
-        essential: bool,
-        startup: bool,
-        gpu: Option<f64>,
-    ) -> Choice {
-        Choice {
-            path: format!(r"c:\apps\{name}"),
-            name: name.into(),
-            id: None,
-            protected,
-            essential,
-            gpu,
-            startup_enabled: startup,
-            startup_disabled: false,
-        }
-    }
-
-    #[test]
-    fn essential_and_protected_are_always_keep_recommendations() {
-        assert_eq!(
-            recommendation(&choice("svchost.exe", true, true, false, Some(20.0))),
-            "KEEP — REQUIRED"
-        );
-        assert_eq!(
-            recommendation(&choice("steam.exe", true, false, false, Some(20.0))),
-            "KEEP — PROTECTED"
-        );
-    }
-
-    #[test]
-    fn browser_and_gpu_active_optional_apps_prefer_lower_priority() {
-        assert_eq!(
-            recommendation(&choice("chrome.exe", false, false, false, None)),
-            "LOWER PRIORITY"
-        );
-        assert_eq!(
-            recommendation(&choice("optional.exe", false, false, false, Some(2.0))),
-            "LOWER PRIORITY"
-        );
-    }
-
-    #[test]
-    fn unused_sync_style_startup_apps_get_persistent_cleanup_hint() {
-        assert_eq!(
-            recommendation(&choice("Everything.exe", false, false, true, None)),
-            "DISABLE STARTUP IF UNUSED"
-        );
-    }
 }
